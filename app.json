@@ -1,0 +1,41 @@
+{
+  "expo": {
+    "name": "Калории Тракер",
+    "slug": "kalorii-tracker",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "kaloriitracker",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "icon": "./assets/icon.png",
+    "splash": {
+      "image": "./assets/splash.png",
+      "backgroundColor": "#0E5559",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.yourcompany.kaloriitracker",
+      "buildNumber": "1",
+      "config": { "usesNonExemptEncryption": false },
+      "infoPlist": {
+        "CFBundleDisplayName": "Калории Тракер",
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.yourcompany.kaloriitracker",
+      "versionCode": 1,
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0E5559"
+      }
+    },
+    "web": { "favicon": "./assets/favicon.png" },
+    "plugins": ["expo-sqlite"],
+    "extra": {
+      "eas": { "projectId": "ЗАМЕНИ-СЛЕД-eas-init" }
+    }
+  }
+}
