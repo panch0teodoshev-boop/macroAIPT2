@@ -1,14 +1,2581 @@
 <!doctype html>
 <html lang="bg">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
-    <meta name="theme-color" content="#0E5559" />
-    <title>MacroAI — Тракер за калории и макроси</title>
-    <meta name="description" content="Тракер за калории, макро- и микронутриенти с рецепти и AI асистент." />
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.jsx"></script>
-  </body>
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#0E5559" />
+<title>MacroAI — Тракер за калории и макроси</title>
+<style>html,body{margin:0;background:#EEF4F3}#boot{font-family:system-ui;color:#4E9D9A;text-align:center;padding:60px}</style>
+<script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@18.3.1",
+    "react-dom": "https://esm.sh/react-dom@18.3.1",
+    "react-dom/client": "https://esm.sh/react-dom@18.3.1/client",
+    "recharts": "https://esm.sh/recharts@2.12.7?external=react,react-dom",
+    "lucide-react": "https://esm.sh/lucide-react@0.383.0?external=react,react-dom"
+  }
+}
+</script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+</head>
+<body>
+<div id="root"><div id="boot">Зареждане…</div></div>
+<script type="text/babel" data-type="module" data-presets="react">
+import { createRoot } from "react-dom/client";
+
+// AI прокси (по избор): сложи адрес на твой прокси с API ключ, за да работи чатът.
+window.__AI_ENDPOINT__ = window.__AI_ENDPOINT__ || "";
+
+// Локално съхранение
+if (!(window.storage && typeof window.storage.get === "function")) {
+  window.storage = {
+    get: async (k) => { const v = localStorage.getItem(k); return v == null ? null : { key:k, value:v }; },
+    set: async (k, v) => { localStorage.setItem(k, v); return { key:k, value:v }; },
+    delete: async (k) => { localStorage.removeItem(k); return { key:k, deleted:true }; },
+    list: async (p="") => ({ keys:Object.keys(localStorage).filter(x=>x.startsWith(p)), prefix:p }),
+  };
+}
+
+import React, { useState, useEffect, useMemo, useRef, createContext, useContext, useCallback } from "react";
+import {
+  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
+  Legend, PieChart, Pie, Cell, LabelList, LineChart, Line,
+} from "recharts";
+import {
+  Calculator, Carrot, CalendarDays, NotebookPen, ShoppingCart, Settings as SettingsIcon, Scale,
+  Plus, Minus, Pencil, Trash2, Search, X, ChevronLeft, ChevronRight, Check, Download, Upload,
+  RotateCcw, AlertTriangle, Sparkles, Loader2, Camera, Heart, Copy, Pill, HeartPulse, Send, ChefHat, MessageCircle, LayoutGrid, User,
+} from "lucide-react";
+
+// Конфигуруем AI endpoint: за деплой задай VITE_AI_PROXY_URL (твой прокси с API ключ).
+// В claude.ai артефакта се ползва директно официалният API без ключ.
+const AI_ENDPOINT = (typeof window !== "undefined" && window.__AI_ENDPOINT__) || "https://api.anthropic.com/v1/messages";
+
+/* ============================================================
+   ТЕМА / ЦВЕТОВЕ  (тъмно тюркоазено, светло тюркоазено, корал)
+   ============================================================ */
+const t = {
+  tealDark: "#0E5559", teal: "#4E9D9A", tealMid: "#3E8C89",
+  tealLight: "#CFE7E3", tealPale: "#EAF5F2",
+  coral: "#DB6E4C", coralDark: "#C25A3F", coralLight: "#F6E0D6", brick: "#B4492F",
+  ink: "#173A40", muted: "#6E8A8C", line: "#E1ECEA", bg: "#FFFFFF", bgSoft: "#F5FAF9",
+  protein: "#E08A66", carbs: "#B4492F", fat: "#0E5559", cal: "#4E9D9A",
+  good: "#2E9E6B", warn: "#C25A3F", white: "#FFFFFF",
+};
+
+const FONT = "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif";
+
+/* ============================================================
+   КОНСТАНТИ
+   ============================================================ */
+const ACTIVITY = [
+  { id: "sedentary", label: "Заседнал начин на живот", labelEn: "Sedentary", mult: 1.2, def: "Малко или никакво движение / офис работа", defEn: "Little or no exercise / desk job" },
+  { id: "low", label: "Ниска активност", labelEn: "Light activity", mult: 1.375, def: "Лека физическа активност 1–3 дни седмично", defEn: "Light exercise 1–3 days/week" },
+  { id: "moderate", label: "Умерена активност", labelEn: "Moderate activity", mult: 1.55, def: "Умерена физическа активност 3–5 дни седмично", defEn: "Moderate exercise 3–5 days/week" },
+  { id: "high", label: "Висока активност", labelEn: "High activity", mult: 1.725, def: "Интензивна физическа активност 6–7 дни седмично", defEn: "Intense exercise 6–7 days/week" },
+  { id: "extreme", label: "Екстремна активност", labelEn: "Extreme activity", mult: 1.9, def: "Интензивни ежедневни тренировки или 2 пъти дневно", defEn: "Daily intense training or twice a day" },
+];
+const GOALS = [
+  { id: "maintain", label: "Поддържане", labelEn: "Maintain", delta: 0 },
+  { id: "lose", label: "Отслабване", labelEn: "Lose", delta: -500 },
+  { id: "gain", label: "Покачване", labelEn: "Gain", delta: 400 },
+];
+const MEALS = [
+  { id: "breakfast", label: "Закуска", labelEn: "Breakfast" },
+  { id: "lunch", label: "Обяд", labelEn: "Lunch" },
+  { id: "dinner", label: "Вечеря", labelEn: "Dinner" },
+  { id: "snack", label: "Междинно", labelEn: "Snack" },
+];
+
+/* ============================================================
+   ПРИМЕРНА БАЗА С ПРОДУКТИ (стойности на 100 г или 1 бр)
+   ============================================================ */
+const SAMPLE_PRODUCTS = [
+  // Птичи / месо
+  { id: "p15", name: "Пилешко филе (сурово)", nameEn: "Chicken breast (raw)", unit: "100g", cal: 114, protein: 24, carbs: 0, fat: 2 },
+  { id: "p16", name: "Пилешко филе (печено)", nameEn: "Chicken breast (cooked)", unit: "100g", cal: 138, protein: 30, carbs: 0, fat: 2 },
+  { id: "p25", name: "Пуешко филе", nameEn: "Turkey breast", unit: "100g", cal: 135, protein: 30, carbs: 0, fat: 1 },
+  { id: "p26", name: "Пилешко бутче (сурово)", nameEn: "Chicken thigh (raw)", unit: "100g", cal: 209, protein: 18, carbs: 0, fat: 15 },
+  { id: "p27", name: "Пилешки дроб", nameEn: "Chicken liver", unit: "100g", cal: 119, protein: 17, carbs: 1, fat: 5 },
+  { id: "p28", name: "Патешко месо", nameEn: "Duck meat", unit: "100g", cal: 337, protein: 19, carbs: 0, fat: 28 },
+  { id: "p14", name: "Телешка кайма", nameEn: "Ground beef", unit: "100g", cal: 216, protein: 27, carbs: 0, fat: 12 },
+  { id: "p29", name: "Свинско бон филе", nameEn: "Pork tenderloin", unit: "100g", cal: 143, protein: 21, carbs: 0, fat: 6 },
+  { id: "p30", name: "Свинска вратна пържола", nameEn: "Pork neck", unit: "100g", cal: 280, protein: 17, carbs: 0, fat: 23 },
+  { id: "p31", name: "Свинска кайма", nameEn: "Ground pork", unit: "100g", cal: 263, protein: 17, carbs: 0, fat: 21 },
+  { id: "p32", name: "Агнешко месо", nameEn: "Lamb", unit: "100g", cal: 294, protein: 25, carbs: 0, fat: 21 },
+  { id: "p33", name: "Заешко месо", nameEn: "Rabbit", unit: "100g", cal: 173, protein: 22, carbs: 0, fat: 9 },
+  { id: "p8", name: "Бекон", nameEn: "Bacon", unit: "100g", cal: 410, protein: 35, carbs: 1, fat: 30 },
+  // Колбаси
+  { id: "p34", name: "Шунка", nameEn: "Ham", unit: "100g", cal: 145, protein: 18, carbs: 2, fat: 7 },
+  { id: "p35", name: "Луканка", nameEn: "Lukanka (dry sausage)", unit: "100g", cal: 462, protein: 23, carbs: 2, fat: 40 },
+  { id: "p36", name: "Салам", nameEn: "Salami", unit: "100g", cal: 336, protein: 22, carbs: 1, fat: 27 },
+  { id: "p37", name: "Кренвирши", nameEn: "Frankfurters", unit: "100g", cal: 290, protein: 12, carbs: 3, fat: 26 },
+  { id: "p38", name: "Пастърма", nameEn: "Pastrami", unit: "100g", cal: 145, protein: 22, carbs: 1, fat: 6 },
+  // Риба и морски
+  { id: "p17", name: "Сьомга филе (сурово)", nameEn: "Salmon fillet (raw)", unit: "100g", cal: 143, protein: 20, carbs: 0, fat: 7 },
+  { id: "p18", name: "Сьомга филе (печена)", nameEn: "Salmon fillet (cooked)", unit: "100g", cal: 167, protein: 26, carbs: 0, fat: 7 },
+  { id: "p40", name: "Тон (консерва във вода)", nameEn: "Tuna (canned in water)", unit: "100g", cal: 116, protein: 26, carbs: 0, fat: 1 },
+  { id: "p41", name: "Скумрия", nameEn: "Mackerel", unit: "100g", cal: 205, protein: 19, carbs: 0, fat: 14 },
+  { id: "p42", name: "Пъстърва", nameEn: "Trout", unit: "100g", cal: 148, protein: 21, carbs: 0, fat: 7 },
+  { id: "p43", name: "Треска", nameEn: "Cod", unit: "100g", cal: 82, protein: 18, carbs: 0, fat: 1 },
+  { id: "p44", name: "Ципура", nameEn: "Sea bream", unit: "100g", cal: 115, protein: 20, carbs: 0, fat: 4 },
+  { id: "p45", name: "Лаврак", nameEn: "Sea bass", unit: "100g", cal: 97, protein: 18, carbs: 0, fat: 2 },
+  { id: "p46", name: "Скариди", nameEn: "Shrimp", unit: "100g", cal: 99, protein: 24, carbs: 0, fat: 0 },
+  { id: "p47", name: "Калмари", nameEn: "Squid", unit: "100g", cal: 92, protein: 16, carbs: 3, fat: 1 },
+  { id: "p48", name: "Миди", nameEn: "Mussels", unit: "100g", cal: 86, protein: 12, carbs: 4, fat: 2 },
+  { id: "p49", name: "Херинга", nameEn: "Herring", unit: "100g", cal: 158, protein: 18, carbs: 0, fat: 9 },
+  { id: "p50", name: "Сардини (консерва)", nameEn: "Sardines (canned)", unit: "100g", cal: 208, protein: 25, carbs: 0, fat: 11 },
+  // Млечни и яйчни
+  { id: "p51", name: "Прясно мляко 3.6%", nameEn: "Whole milk 3.6%", unit: "100g", cal: 64, protein: 3, carbs: 5, fat: 4 },
+  { id: "p52", name: "Прясно мляко 1.5%", nameEn: "Low-fat milk 1.5%", unit: "100g", cal: 47, protein: 3, carbs: 5, fat: 2 },
+  { id: "p53", name: "Кисело мляко 2%", nameEn: "Yogurt 2%", unit: "100g", cal: 60, protein: 4, carbs: 4, fat: 2 },
+  { id: "p54", name: "Гръцко кисело мляко", nameEn: "Greek yogurt", unit: "100g", cal: 97, protein: 9, carbs: 4, fat: 5 },
+  { id: "p20", name: "Котидж сирене", nameEn: "Cottage cheese", unit: "100g", cal: 92, protein: 11, carbs: 4, fat: 4 },
+  { id: "p55", name: "Сирене бяло саламурено", nameEn: "White brined cheese", unit: "100g", cal: 260, protein: 17, carbs: 1, fat: 21 },
+  { id: "p56", name: "Кашкавал", nameEn: "Kashkaval (yellow cheese)", unit: "100g", cal: 360, protein: 25, carbs: 1, fat: 28 },
+  { id: "p57", name: "Извара", nameEn: "Curd cheese", unit: "100g", cal: 130, protein: 18, carbs: 3, fat: 5 },
+  { id: "p58", name: "Моцарела", nameEn: "Mozzarella", unit: "100g", cal: 280, protein: 22, carbs: 2, fat: 21 },
+  { id: "p59", name: "Пармезан", nameEn: "Parmesan", unit: "100g", cal: 392, protein: 36, carbs: 4, fat: 26 },
+  { id: "p60", name: "Крема сирене", nameEn: "Cream cheese", unit: "100g", cal: 342, protein: 6, carbs: 4, fat: 34 },
+  { id: "p61", name: "Масло краве", nameEn: "Butter", unit: "100g", cal: 717, protein: 1, carbs: 0, fat: 81 },
+  { id: "p62", name: "Сметана за готвене 20%", nameEn: "Cooking cream 20%", unit: "100g", cal: 195, protein: 3, carbs: 4, fat: 19 },
+  { id: "p19", name: "Яйце L", nameEn: "Egg (large)", unit: "piece", cal: 69, protein: 6, carbs: 0, fat: 5 },
+  { id: "p64", name: "Яйце M", nameEn: "Egg (medium)", unit: "piece", cal: 60, protein: 5, carbs: 0, fat: 4 },
+  { id: "p63", name: "Яйчен белтък", nameEn: "Egg white", unit: "100g", cal: 52, protein: 11, carbs: 1, fat: 0 },
+  // Зърнени, тестени, печени
+  { id: "p65", name: "Овесени ядки", nameEn: "Oats", unit: "100g", cal: 389, protein: 17, carbs: 66, fat: 7 },
+  { id: "p21", name: "Ориз бял (суров)", nameEn: "White rice (raw)", unit: "100g", cal: 344, protein: 7, carbs: 78, fat: 1 },
+  { id: "p22", name: "Ориз бял (варен)", nameEn: "White rice (cooked)", unit: "100g", cal: 120, protein: 2, carbs: 28, fat: 0 },
+  { id: "p73", name: "Кафяв ориз (суров)", nameEn: "Brown rice (raw)", unit: "100g", cal: 370, protein: 8, carbs: 77, fat: 3 },
+  { id: "p13", name: "Елда (сурова)", nameEn: "Buckwheat (raw)", unit: "100g", cal: 351, protein: 13, carbs: 72, fat: 3 },
+  { id: "p71", name: "Киноа (сурова)", nameEn: "Quinoa (raw)", unit: "100g", cal: 368, protein: 14, carbs: 64, fat: 6 },
+  { id: "p72", name: "Булгур (сух)", nameEn: "Bulgur (dry)", unit: "100g", cal: 342, protein: 12, carbs: 76, fat: 1 },
+  { id: "p70", name: "Кускус (сух)", nameEn: "Couscous (dry)", unit: "100g", cal: 376, protein: 13, carbs: 77, fat: 1 },
+  { id: "p68", name: "Спагети (сурови)", nameEn: "Spaghetti (raw)", unit: "100g", cal: 371, protein: 13, carbs: 75, fat: 2 },
+  { id: "p69", name: "Спагети (варени)", nameEn: "Spaghetti (cooked)", unit: "100g", cal: 158, protein: 6, carbs: 31, fat: 1 },
+  { id: "p66", name: "Пълнозърнест хляб", nameEn: "Whole grain bread", unit: "100g", cal: 247, protein: 9, carbs: 41, fat: 4 },
+  { id: "p67", name: "Бял хляб", nameEn: "White bread", unit: "100g", cal: 265, protein: 9, carbs: 49, fat: 3 },
+  { id: "p77", name: "Питка", nameEn: "Pita bread", unit: "100g", cal: 275, protein: 9, carbs: 55, fat: 2 },
+  { id: "p78", name: "Тортила пшенична", nameEn: "Wheat tortilla", unit: "100g", cal: 310, protein: 8, carbs: 50, fat: 8 },
+  { id: "p74", name: "Корнфлейкс", nameEn: "Corn flakes", unit: "100g", cal: 357, protein: 8, carbs: 84, fat: 1 },
+  { id: "p75", name: "Мюсли", nameEn: "Muesli", unit: "100g", cal: 367, protein: 10, carbs: 66, fat: 6 },
+  { id: "p76", name: "Пшенично брашно", nameEn: "Wheat flour", unit: "100g", cal: 364, protein: 10, carbs: 76, fat: 1 },
+  { id: "p79", name: "Грис", nameEn: "Semolina", unit: "100g", cal: 360, protein: 12, carbs: 73, fat: 1 },
+  // Бобови
+  { id: "p11", name: "Леща (сурова)", nameEn: "Lentils (raw)", unit: "100g", cal: 361, protein: 24, carbs: 60, fat: 1 },
+  { id: "p10", name: "Черен боб (варен)", nameEn: "Black beans (cooked)", unit: "100g", cal: 109, protein: 7, carbs: 20, fat: 0 },
+  { id: "p12", name: "Бял боб (суров)", nameEn: "White beans (raw)", unit: "100g", cal: 225, protein: 24, carbs: 38, fat: 1 },
+  { id: "p83", name: "Боб червен (варен)", nameEn: "Red kidney beans (cooked)", unit: "100g", cal: 127, protein: 9, carbs: 23, fat: 1 },
+  { id: "p80", name: "Нахут (варен)", nameEn: "Chickpeas (cooked)", unit: "100g", cal: 164, protein: 9, carbs: 27, fat: 3 },
+  { id: "p81", name: "Нахут (суров)", nameEn: "Chickpeas (raw)", unit: "100g", cal: 364, protein: 19, carbs: 61, fat: 6 },
+  { id: "p82", name: "Зелен грах", nameEn: "Green peas", unit: "100g", cal: 81, protein: 5, carbs: 14, fat: 0 },
+  { id: "p84", name: "Соеви зърна", nameEn: "Soybeans", unit: "100g", cal: 446, protein: 36, carbs: 30, fat: 20 },
+  { id: "p85", name: "Тофу", nameEn: "Tofu", unit: "100g", cal: 144, protein: 17, carbs: 3, fat: 9 },
+  { id: "p86", name: "Хумус", nameEn: "Hummus", unit: "100g", cal: 166, protein: 8, carbs: 14, fat: 10 },
+  // Зеленчуци
+  { id: "p87", name: "Домат", nameEn: "Tomato", unit: "100g", cal: 18, protein: 1, carbs: 4, fat: 0 },
+  { id: "p88", name: "Краставица", nameEn: "Cucumber", unit: "100g", cal: 15, protein: 1, carbs: 4, fat: 0 },
+  { id: "p89", name: "Червена чушка", nameEn: "Red pepper", unit: "100g", cal: 31, protein: 1, carbs: 6, fat: 0 },
+  { id: "p90", name: "Морков", nameEn: "Carrot", unit: "100g", cal: 41, protein: 1, carbs: 10, fat: 0 },
+  { id: "p91", name: "Картоф", nameEn: "Potato", unit: "100g", cal: 77, protein: 2, carbs: 17, fat: 0 },
+  { id: "p92", name: "Сладък картоф", nameEn: "Sweet potato", unit: "100g", cal: 86, protein: 2, carbs: 20, fat: 0 },
+  { id: "p93", name: "Лук", nameEn: "Onion", unit: "100g", cal: 40, protein: 1, carbs: 9, fat: 0 },
+  { id: "p94", name: "Броколи", nameEn: "Broccoli", unit: "100g", cal: 34, protein: 3, carbs: 7, fat: 0 },
+  { id: "p95", name: "Карфиол", nameEn: "Cauliflower", unit: "100g", cal: 25, protein: 2, carbs: 5, fat: 0 },
+  { id: "p96", name: "Спанак", nameEn: "Spinach", unit: "100g", cal: 23, protein: 3, carbs: 4, fat: 0 },
+  { id: "p97", name: "Зеле", nameEn: "Cabbage", unit: "100g", cal: 25, protein: 1, carbs: 6, fat: 0 },
+  { id: "p98", name: "Тиквички", nameEn: "Zucchini", unit: "100g", cal: 17, protein: 1, carbs: 3, fat: 0 },
+  { id: "p99", name: "Гъби печурки", nameEn: "Mushrooms", unit: "100g", cal: 22, protein: 3, carbs: 3, fat: 0 },
+  { id: "p100", name: "Царевица (варена)", nameEn: "Corn (boiled)", unit: "100g", cal: 96, protein: 3, carbs: 21, fat: 1 },
+  { id: "p101", name: "Цвекло", nameEn: "Beetroot", unit: "100g", cal: 43, protein: 2, carbs: 10, fat: 0 },
+  { id: "p102", name: "Зелен фасул", nameEn: "Green beans", unit: "100g", cal: 31, protein: 2, carbs: 7, fat: 0 },
+  { id: "p5", name: "Рукола", nameEn: "Arugula", unit: "100g", cal: 28, protein: 3, carbs: 4, fat: 0 },
+  { id: "p6", name: "Аспержи", nameEn: "Asparagus", unit: "100g", cal: 28, protein: 3, carbs: 4, fat: 0 },
+  { id: "p7", name: "Авокадо", nameEn: "Avocado", unit: "100g", cal: 166, protein: 3, carbs: 7, fat: 14 },
+  // Плодове
+  { id: "p3", name: "Ябълка", nameEn: "Apple", unit: "100g", cal: 56, protein: 0, carbs: 14, fat: 0 },
+  { id: "p9", name: "Банан", nameEn: "Banana", unit: "100g", cal: 92, protein: 1, carbs: 23, fat: 0 },
+  { id: "p103", name: "Портокал", nameEn: "Orange", unit: "100g", cal: 47, protein: 1, carbs: 12, fat: 0 },
+  { id: "p104", name: "Грозде", nameEn: "Grapes", unit: "100g", cal: 69, protein: 1, carbs: 18, fat: 0 },
+  { id: "p105", name: "Ягоди", nameEn: "Strawberries", unit: "100g", cal: 32, protein: 1, carbs: 8, fat: 0 },
+  { id: "p23", name: "Боровинки", nameEn: "Blueberries", unit: "100g", cal: 56, protein: 0, carbs: 14, fat: 0 },
+  { id: "p24", name: "Малини", nameEn: "Raspberries", unit: "100g", cal: 48, protein: 0, carbs: 12, fat: 0 },
+  { id: "p106", name: "Круша", nameEn: "Pear", unit: "100g", cal: 57, protein: 0, carbs: 15, fat: 0 },
+  { id: "p107", name: "Праскова", nameEn: "Peach", unit: "100g", cal: 39, protein: 1, carbs: 10, fat: 0 },
+  { id: "p4", name: "Кайсия", nameEn: "Apricot", unit: "100g", cal: 48, protein: 1, carbs: 11, fat: 0 },
+  { id: "p108", name: "Диня", nameEn: "Watermelon", unit: "100g", cal: 30, protein: 1, carbs: 8, fat: 0 },
+  { id: "p109", name: "Пъпеш", nameEn: "Melon", unit: "100g", cal: 34, protein: 1, carbs: 8, fat: 0 },
+  { id: "p110", name: "Манго", nameEn: "Mango", unit: "100g", cal: 60, protein: 1, carbs: 15, fat: 0 },
+  { id: "p111", name: "Ананас", nameEn: "Pineapple", unit: "100g", cal: 50, protein: 1, carbs: 13, fat: 0 },
+  { id: "p112", name: "Киви", nameEn: "Kiwi", unit: "100g", cal: 61, protein: 1, carbs: 15, fat: 1 },
+  { id: "p113", name: "Череши", nameEn: "Cherries", unit: "100g", cal: 63, protein: 1, carbs: 16, fat: 0 },
+  { id: "p114", name: "Нар", nameEn: "Pomegranate", unit: "100g", cal: 83, protein: 2, carbs: 19, fat: 1 },
+  { id: "p115", name: "Фурми", nameEn: "Dates", unit: "100g", cal: 282, protein: 2, carbs: 75, fat: 0 },
+  { id: "p116", name: "Стафиди", nameEn: "Raisins", unit: "100g", cal: 299, protein: 3, carbs: 79, fat: 0 },
+  // Ядки, семена, масла
+  { id: "p2", name: "Бадеми", nameEn: "Almonds", unit: "100g", cal: 533, protein: 20, carbs: 20, fat: 47 },
+  { id: "p1", name: "Бадемово масло", nameEn: "Almond butter", unit: "100g", cal: 624, protein: 12, carbs: 18, fat: 56 },
+  { id: "p117", name: "Орехи", nameEn: "Walnuts", unit: "100g", cal: 654, protein: 15, carbs: 14, fat: 65 },
+  { id: "p118", name: "Лешници", nameEn: "Hazelnuts", unit: "100g", cal: 628, protein: 15, carbs: 17, fat: 61 },
+  { id: "p119", name: "Кашу", nameEn: "Cashews", unit: "100g", cal: 553, protein: 18, carbs: 30, fat: 44 },
+  { id: "p120", name: "Фъстъци", nameEn: "Peanuts", unit: "100g", cal: 567, protein: 26, carbs: 16, fat: 49 },
+  { id: "p121", name: "Фъстъчено масло", nameEn: "Peanut butter", unit: "100g", cal: 588, protein: 25, carbs: 20, fat: 50 },
+  { id: "p122", name: "Слънчогледови семки", nameEn: "Sunflower seeds", unit: "100g", cal: 584, protein: 21, carbs: 20, fat: 51 },
+  { id: "p123", name: "Тиквени семки", nameEn: "Pumpkin seeds", unit: "100g", cal: 559, protein: 30, carbs: 11, fat: 49 },
+  { id: "p124", name: "Чиа семена", nameEn: "Chia seeds", unit: "100g", cal: 486, protein: 17, carbs: 42, fat: 31 },
+  { id: "p128", name: "Тахан", nameEn: "Tahini", unit: "100g", cal: 595, protein: 17, carbs: 21, fat: 53 },
+  { id: "p125", name: "Зехтин", nameEn: "Olive oil", unit: "100g", cal: 884, protein: 0, carbs: 0, fat: 100 },
+  { id: "p126", name: "Кокосово масло", nameEn: "Coconut oil", unit: "100g", cal: 892, protein: 0, carbs: 0, fat: 100 },
+  { id: "p127", name: "Маслини", nameEn: "Olives", unit: "100g", cal: 115, protein: 1, carbs: 6, fat: 11 },
+  // Захарни, снакс, сосове, добавки
+  { id: "p129", name: "Мед", nameEn: "Honey", unit: "100g", cal: 304, protein: 0, carbs: 82, fat: 0 },
+  { id: "p130", name: "Черен шоколад 70%", nameEn: "Dark chocolate 70%", unit: "100g", cal: 598, protein: 8, carbs: 46, fat: 43 },
+  { id: "p131", name: "Млечен шоколад", nameEn: "Milk chocolate", unit: "100g", cal: 535, protein: 8, carbs: 59, fat: 30 },
+  { id: "p134", name: "Захар", nameEn: "Sugar", unit: "100g", cal: 387, protein: 0, carbs: 100, fat: 0 },
+  { id: "p132", name: "Протеин на прах (whey)", nameEn: "Whey protein powder", unit: "100g", cal: 400, protein: 80, carbs: 8, fat: 7 },
+  { id: "p133", name: "Протеинов бар", nameEn: "Protein bar", unit: "100g", cal: 350, protein: 30, carbs: 35, fat: 9 },
+  { id: "p135", name: "Кетчуп", nameEn: "Ketchup", unit: "100g", cal: 112, protein: 1, carbs: 27, fat: 0 },
+  { id: "p136", name: "Майонеза", nameEn: "Mayonnaise", unit: "100g", cal: 680, protein: 1, carbs: 1, fat: 75 },
+  { id: "p137", name: "Горчица", nameEn: "Mustard", unit: "100g", cal: 66, protein: 4, carbs: 6, fat: 3 },
+  { id: "p138", name: "Соев сос", nameEn: "Soy sauce", unit: "100g", cal: 53, protein: 8, carbs: 5, fat: 0 },
+];
+
+/* ============================================================
+   МИКРОНУТРИЕНТИ + RDA (препоръчителен дневен прием)
+   type: "goal" = стреми се да достигнеш; "limit" = не надвишавай
+   ============================================================ */
+const MICROS = [
+  { key: "fiber", bg: "Фибри", en: "Fiber", unit: "г", rda: 30, type: "goal" },
+  { key: "sugar", bg: "Захари", en: "Sugars", unit: "г", rda: 50, type: "limit" },
+  { key: "satfat", bg: "Наситени мазнини", en: "Saturated fat", unit: "г", rda: 20, type: "limit" },
+  { key: "sodium", bg: "Натрий", en: "Sodium", unit: "мг", rda: 2300, type: "limit" },
+  { key: "potassium", bg: "Калий", en: "Potassium", unit: "мг", rda: 3500, type: "goal" },
+  { key: "calcium", bg: "Калций", en: "Calcium", unit: "мг", rda: 1000, type: "goal" },
+  { key: "magnesium", bg: "Магнезий", en: "Magnesium", unit: "мг", rda: 400, type: "goal" },
+  { key: "iron", bg: "Желязо", en: "Iron", unit: "мг", rda: 14, type: "goal" },
+  { key: "zinc", bg: "Цинк", en: "Zinc", unit: "мг", rda: 11, type: "goal" },
+  { key: "vitA", bg: "Витамин A", en: "Vitamin A", unit: "µg", rda: 800, type: "goal" },
+  { key: "vitC", bg: "Витамин C", en: "Vitamin C", unit: "мг", rda: 80, type: "goal" },
+  { key: "vitD", bg: "Витамин D", en: "Vitamin D", unit: "µg", rda: 20, type: "goal" },
+  { key: "vitE", bg: "Витамин E", en: "Vitamin E", unit: "мг", rda: 12, type: "goal" },
+  { key: "vitK", bg: "Витамин K", en: "Vitamin K", unit: "µg", rda: 75, type: "goal" },
+  { key: "vitB12", bg: "B-комплекс (B12)", en: "B-complex (B12)", unit: "µg", rda: 2.4, type: "goal" },
+];
+const MICRO_KEYS = MICROS.map((m) => m.key);
+
+// Примерни микронутриенти (на 100 г, освен яйцето — на брой) за част от продуктите,
+// за да има реални данни от старта. Останалите се попълват от AI / ръчно.
+const PRODUCT_MICROS = {
+  p6: { fiber: 2, sugar: 1.9, satfat: 0, sodium: 2, potassium: 202, calcium: 24, magnesium: 14, iron: 2.1, zinc: 0.5, vitA: 38, vitC: 5.6, vitD: 0, vitE: 1.1, vitK: 41, vitB12: 0 },
+  p7: { fiber: 7, sugar: 0.7, satfat: 2.1, sodium: 7, potassium: 485, calcium: 12, magnesium: 29, iron: 0.6, zinc: 0.6, vitA: 7, vitC: 10, vitD: 0, vitE: 2.1, vitK: 21, vitB12: 0 },
+  p1: { fiber: 10, sugar: 4, satfat: 4.5, sodium: 0, potassium: 748, calcium: 347, magnesium: 279, iron: 3.5, zinc: 3, vitA: 0, vitC: 0, vitD: 0, vitE: 24, vitK: 0, vitB12: 0 },
+  p15: { fiber: 0, sugar: 0, satfat: 0.6, sodium: 45, potassium: 256, calcium: 5, magnesium: 25, iron: 0.4, zinc: 0.7, vitA: 9, vitC: 0, vitD: 0, vitE: 0.2, vitK: 0, vitB12: 0.3 },
+  p3: { fiber: 2.4, sugar: 10, satfat: 0, sodium: 1, potassium: 107, calcium: 6, magnesium: 5, iron: 0.1, zinc: 0, vitA: 3, vitC: 4.6, vitD: 0, vitE: 0.2, vitK: 2.2, vitB12: 0 },
+  p19: { fiber: 0, sugar: 0, satfat: 1.6, sodium: 71, potassium: 69, calcium: 28, magnesium: 6, iron: 0.9, zinc: 0.6, vitA: 80, vitC: 0, vitD: 1, vitE: 0.5, vitK: 0.1, vitB12: 0.6 },
+  p5: { fiber: 1.6, sugar: 2, satfat: 0, sodium: 27, potassium: 369, calcium: 160, magnesium: 47, iron: 1.5, zinc: 0.5, vitA: 119, vitC: 15, vitD: 0, vitE: 0.4, vitK: 109, vitB12: 0 },
+};
+
+const RECIPE_CATEGORIES = [
+  { id: "breakfast", bg: "Закуска", en: "Breakfast" },
+  { id: "lunch", bg: "Обяд", en: "Lunch" },
+  { id: "dinner", bg: "Вечеря", en: "Dinner" },
+  { id: "snack", bg: "Снакс", en: "Snack" },
+  { id: "dessert", bg: "Десерт", en: "Dessert" },
+  { id: "drink", bg: "Напитка", en: "Drink" },
+  { id: "other", bg: "Друго", en: "Other" },
+];
+const DAYS = {
+  bg: ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"],
+  en: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"],
+};
+const DAYS_SHORT_I = {
+  bg: ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"],
+  en: ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"],
+};
+const MONTHS = {
+  bg: ["януари", "февруари", "март", "април", "май", "юни", "юли", "август", "септември", "октомври", "ноември", "декември"],
+  en: ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"],
+};
+const productName = (p, lang) => (lang === "en" && p.nameEn ? p.nameEn : p.name);
+
+const STR = {
+  bg: {
+    appKicker: "Тракер за калории и макроси",
+    save: "Запази", delete: "Изтрий", back: "Назад", add: "Добави", today: "днес", average: "Средно",
+    g: "г", pc: "бр", kcal: "kcal", protein: "Протеин", carbs: "Въглехидрати", fat: "Мазнини", calories: "Калории",
+    pS: "П", cS: "В", fS: "М", calS: "Кал.", carbsS: "Въгл.",
+    t_calc: "Калкулатор", t_products: "Продукти", t_week: "Седмица", t_diary: "Дневник", t_shopping: "Пазар", t_settings: "Настройки",
+    title_calc: "Калкулатор на калории", title_products: "Продукти", title_week: "Седмица", title_diary: "Хранителен дневник", title_shopping: "Списък за пазар", title_settings: "Настройки",
+    calcSection: "Калкулатор на калории (Mifflin–St Jeor)",
+    sex: "Пол", male: "Мъж", female: "Жена", weight: "Тегло", height: "Ръст", age: "Възраст",
+    activityLevel: "Ниво на активност", bmr: "BMR", multiplier: "Коефициент", tdee: "TDEE",
+    goal: "Цел", maintain: "Поддържане", lose: "Отслабване", gain: "Покачване",
+    manualCalories: "Ръчно задаване на калории", dailyGoal: "Дневна цел калории", kcalPerDay: "kcal / ден",
+    macroSplit: "Разпределение на макроси", sum: "Сума", macroWarn: "Процентите трябва да са общо 100%.",
+    activityLevels: "Нива на активност", kg: "кг", cm: "см", yr: "г",
+    productList: "Лист с продукти", searchProduct: "Търси продукт...", food: "Храна", serving: "Порция",
+    noProducts: "Няма намерени продукти.", productsNote: "Стойностите са за 100 г или 1 брой. Докосни продукт за редакция.",
+    newProduct: "Нов продукт", editProduct: "Редактирай продукт", name: "Име", unit: "Мерна единица",
+    g100: "100 г", pc1: "1 бр", caloriesField: "Калории", namePlaceholder: "Напр. Овесени ядки",
+    macroSplitG: "Разпределение на макросите (г)", addFoodsHint: "Добави храни, за да видиш разпределението.",
+    noProductsAdded: "Няма добавени продукти.", addProductBtn: "Добави продукт", amount: "Количество", count: "Брой",
+    remainingKcal: "Оставащи kcal", perUnit: "За", addTo: "добави продукт",
+    weeklyTracker: "Седмичен тракер", dailyPlan: "Дневен план", avgPerDay: "Средно/ден", vsPlan: "Спрямо план",
+    caloriesByDay: "Калории по дни", macrosByDay: "Макроси по дни (г)", weeklySummary: "Седмично обобщение", day: "Ден",
+    shoppingList: "Списък за пазар", manualList: "Ръчен списък", addShoppingItem: "Добави продукт за пазар...",
+    noManual: "Все още няма ръчно добавени продукти.", autoFromWeek: "Автоматичен (от седмицата)",
+    noWeekProducts: "Няма използвани продукти през избраната седмица.",
+    shoppingNote: "Автоматичният списък се генерира от продуктите, използвани в избраната седмица (виж раздел „Седмица\").",
+    language: "Език", bulgarian: "Български", english: "English",
+    exportData: "Експорт на данни", exportAll: "Експорт всичко (JSON)", exportProducts: "Експорт продукти (CSV)",
+    importData: "Импорт на данни", importAll: "Импорт всичко (JSON)", importProducts: "Импорт продукти (CSV)",
+    csvNote: "CSV формат: Име, Мерна единица, Калории, Протеин, Въглехидрати, Мазнини.",
+    reset: "Нулиране", resetAll: "Нулирай всички данни",
+    resetConfirm: "Сигурен ли си? Това ще изтрие всички данни и ще върне примерните.",
+    footer1: "Данните се пазят локално на това устройство.", footer2: "Тракер за калории и макронутриенти · v1.0",
+    tExportedJson: "Експортирано в JSON", tExportedCsv: "Продуктите са експортирани в CSV",
+    tImported: "Данните са импортирани", tImportedN: "Импортирани {n} продукта", tBadJson: "Грешен JSON файл",
+    tBadCsv: "Грешен CSV файл", tResetDone: "Данните са нулирани",
+    t_weight: "Тегло", title_weight: "Дневник на теглото",
+    logWeight: "Запиши тегло за деня", currentWeight: "Текущо тегло", change: "Промяна",
+    avgWeek: "Средно — седмица", avgMonth: "Средно — месец", avgYear: "Средно — година",
+    last7: "7 дни", last30: "30 дни", last365: "365 дни",
+    weightChart: "Тегло във времето", weightHistory: "История", noWeight: "Все още няма записани тегла.",
+    aiBtn: "AI", aiTitle: "AI разпознаване на хранене",
+    aiDesc: "Прикачи снимка на храненето или го опиши — AI ще оцени калориите и макросите.",
+    aiPlaceholder: "напр. 2 филии пълнозърнест хляб с масло, 2 бъркани яйца и кафе с мляко",
+    aiAnalyze: "Анализирай", aiAnalyzing: "Анализирам…", aiAddAll: "Добави избраните",
+    aiError: "Възникна грешка при анализа. Опитай пак.", aiNoItems: "Не разпознах храни. Опиши по-конкретно.", aiEst: "оценка",
+    aiPhoto: "Снимка", aiRemovePhoto: "Премахни снимката", aiOr: "и/или",
+    t_recipes: "Рецепти", t_ai: "AI", t_more: "Още", title_recipes: "Рецепти", title_ai: "AI асистент", title_more: "Още", title_micros: "Микронутриенти", t_micros: "Микро",
+    recipes: "Рецепти", newRecipe: "Нова рецепта", editRecipe: "Редактирай рецепта", recipeName: "Име на рецептата",
+    category: "Категория", tags: "Тагове", tagsPlaceholder: "напр. веган, бързо, високобелтъчно", servings: "Порции",
+    ingredients: "Съставки", addIngredient: "Добави съставка", perServing: "За 1 порция", totalRecipe: "Общо за рецептата",
+    favorites: "Любими", allCategories: "Всички", searchRecipe: "Търси рецепта...", noRecipes: "Все още няма рецепти.",
+    duplicate: "Дублирай", logRecipe: "Логни", logToMeal: "Добави към хранене", servingsEaten: "Изядени порции", favorite: "Любима",
+    recipeNote: "Хранителната стойност се изчислява автоматично от съставките.",
+    micros: "Микронутриенти", dailyIntake: "Дневен прием", ofRDA: "от RDA", nutrientHistory: "История на приема",
+    selectNutrient: "Избери елемент", microsNote: "Данните се сумират от продукти/рецепти със зададени микронутриенти и от AI оценки.",
+    noMicroData: "Няма данни за този ден.", warnExcess: "Прекомерен прием", warnLow: "Възможен дефицит", micronutrients: "Микронутриенти",
+    aiChat: "AI асистент", aiChatHint: "Питай за хранене, рецепти и планове. Асистентът вижда продуктите, рецептите, целите и дневника ти.",
+    askPlaceholder: "Напиши съобщение…", send: "Изпрати", clearChat: "Изчисти чата", thinking: "Мисля…",
+    q_meal: "Какво да хапна сега?", q_recipe: "Предложи рецепта от наличното", q_plan: "Дневен хранителен план", q_waste: "Използвай продукти с изтичащ срок",
+    preferences: "Предпочитания", allergies: "Алергии / непоносимости", diet: "Диета / режим",
+    allergiesPlaceholder: "напр. ядки, лактоза", dietPlaceholder: "напр. вегетарианска, без глутен",
+    prefNote: "Използват се от AI асистента за персонализирани предложения.",
+    expiry: "Срок на годност", expirySoon: "изтича скоро",
+    t_profile: "Профил", title_profile: "Профил", profile: "Профил",
+    yourName: "Твоето име", profileNamePh: "напр. Иван", goalWeight: "Целево тегло", dailyTargets: "Дневни цели",
+    createProfile: "Създай профил", welcomeDesc: "Въведи няколко данни, за да изчислим калорийните и макро целите ти. Можеш да ги промениш по всяко време.",
+    getStarted: "Започни", skip: "Прескочи", hello: "Здравей", bodyData: "Данни за тялото",
+  },
+  en: {
+    appKicker: "Calorie & macro tracker",
+    save: "Save", delete: "Delete", back: "Back", add: "Add", today: "today", average: "Average",
+    g: "g", pc: "pc", kcal: "kcal", protein: "Protein", carbs: "Carbs", fat: "Fat", calories: "Calories",
+    pS: "P", cS: "C", fS: "F", calS: "Cal", carbsS: "Carbs",
+    t_calc: "Calculator", t_products: "Products", t_week: "Week", t_diary: "Diary", t_shopping: "Shopping", t_settings: "Settings",
+    title_calc: "Calorie calculator", title_products: "Products", title_week: "Week", title_diary: "Food diary", title_shopping: "Shopping list", title_settings: "Settings",
+    calcSection: "Calorie calculator (Mifflin–St Jeor)",
+    sex: "Sex", male: "Male", female: "Female", weight: "Weight", height: "Height", age: "Age",
+    activityLevel: "Activity level", bmr: "BMR", multiplier: "Multiplier", tdee: "TDEE",
+    goal: "Goal", maintain: "Maintain", lose: "Lose", gain: "Gain",
+    manualCalories: "Manual calories", dailyGoal: "Daily calorie goal", kcalPerDay: "kcal / day",
+    macroSplit: "Macro split", sum: "Sum", macroWarn: "Percentages must total 100%.",
+    activityLevels: "Activity levels", kg: "kg", cm: "cm", yr: "y",
+    productList: "Product list", searchProduct: "Search product...", food: "Food", serving: "Serving",
+    noProducts: "No products found.", productsNote: "Values per 100 g or 1 piece. Tap a product to edit.",
+    newProduct: "New product", editProduct: "Edit product", name: "Name", unit: "Unit",
+    g100: "100 g", pc1: "1 pc", caloriesField: "Calories", namePlaceholder: "e.g. Oats",
+    macroSplitG: "Macro split (g)", addFoodsHint: "Add foods to see the split.",
+    noProductsAdded: "No products added.", addProductBtn: "Add product", amount: "Amount", count: "Count",
+    remainingKcal: "Remaining kcal", perUnit: "Per", addTo: "add product",
+    weeklyTracker: "Weekly tracker", dailyPlan: "Daily plan", avgPerDay: "Avg/day", vsPlan: "vs plan",
+    caloriesByDay: "Calories by day", macrosByDay: "Macros by day (g)", weeklySummary: "Weekly summary", day: "Day",
+    shoppingList: "Shopping list", manualList: "Manual list", addShoppingItem: "Add shopping item...",
+    noManual: "No manual items yet.", autoFromWeek: "Auto (from the week)",
+    noWeekProducts: "No products used in the selected week.",
+    shoppingNote: "The auto list is generated from products used in the selected week (see the Week tab).",
+    language: "Language", bulgarian: "Български", english: "English",
+    exportData: "Export data", exportAll: "Export all (JSON)", exportProducts: "Export products (CSV)",
+    importData: "Import data", importAll: "Import all (JSON)", importProducts: "Import products (CSV)",
+    csvNote: "CSV format: Name, Unit, Calories, Protein, Carbs, Fat.",
+    reset: "Reset", resetAll: "Reset all data",
+    resetConfirm: "Are you sure? This will erase all data and restore the samples.",
+    footer1: "Data is stored locally on this device.", footer2: "Calorie & macronutrient tracker · v1.0",
+    tExportedJson: "Exported to JSON", tExportedCsv: "Products exported to CSV",
+    tImported: "Data imported", tImportedN: "Imported {n} products", tBadJson: "Invalid JSON file",
+    tBadCsv: "Invalid CSV file", tResetDone: "Data has been reset",
+    t_weight: "Weight", title_weight: "Weight log",
+    logWeight: "Log weight for the day", currentWeight: "Current weight", change: "Change",
+    avgWeek: "Average — week", avgMonth: "Average — month", avgYear: "Average — year",
+    last7: "7 days", last30: "30 days", last365: "365 days",
+    weightChart: "Weight over time", weightHistory: "History", noWeight: "No weights logged yet.",
+    aiBtn: "AI", aiTitle: "AI food recognition",
+    aiDesc: "Attach a photo of your meal or describe it — AI will estimate calories and macros.",
+    aiPlaceholder: "e.g. 2 slices of whole-grain bread with butter, 2 scrambled eggs and coffee with milk",
+    aiAnalyze: "Analyze", aiAnalyzing: "Analyzing…", aiAddAll: "Add selected",
+    aiError: "Something went wrong. Please try again.", aiNoItems: "No foods recognized. Try being more specific.", aiEst: "est.",
+    aiPhoto: "Photo", aiRemovePhoto: "Remove photo", aiOr: "and/or",
+    t_recipes: "Recipes", t_ai: "AI", t_more: "More", title_recipes: "Recipes", title_ai: "AI assistant", title_more: "More", title_micros: "Micronutrients", t_micros: "Micros",
+    recipes: "Recipes", newRecipe: "New recipe", editRecipe: "Edit recipe", recipeName: "Recipe name",
+    category: "Category", tags: "Tags", tagsPlaceholder: "e.g. vegan, quick, high-protein", servings: "Servings",
+    ingredients: "Ingredients", addIngredient: "Add ingredient", perServing: "Per serving", totalRecipe: "Recipe total",
+    favorites: "Favorites", allCategories: "All", searchRecipe: "Search recipe...", noRecipes: "No recipes yet.",
+    duplicate: "Duplicate", logRecipe: "Log", logToMeal: "Add to meal", servingsEaten: "Servings eaten", favorite: "Favorite",
+    recipeNote: "Nutrition is calculated automatically from the ingredients.",
+    micros: "Micronutrients", dailyIntake: "Daily intake", ofRDA: "of RDA", nutrientHistory: "Intake history",
+    selectNutrient: "Select nutrient", microsNote: "Totals are summed from products/recipes with micronutrient data and AI estimates.",
+    noMicroData: "No data for this day.", warnExcess: "Excessive intake", warnLow: "Possible deficiency", micronutrients: "Micronutrients",
+    aiChat: "AI assistant", aiChatHint: "Ask about nutrition, recipes and plans. The assistant sees your products, recipes, goals and diary.",
+    askPlaceholder: "Type a message…", send: "Send", clearChat: "Clear chat", thinking: "Thinking…",
+    q_meal: "What should I eat now?", q_recipe: "Suggest a recipe from what I have", q_plan: "Daily meal plan", q_waste: "Use foods expiring soon",
+    preferences: "Preferences", allergies: "Allergies / intolerances", diet: "Diet / regimen",
+    allergiesPlaceholder: "e.g. nuts, lactose", dietPlaceholder: "e.g. vegetarian, gluten-free",
+    prefNote: "Used by the AI assistant for personalized suggestions.",
+    expiry: "Expiry date", expirySoon: "expiring soon",
+    t_profile: "Profile", title_profile: "Profile", profile: "Profile",
+    yourName: "Your name", profileNamePh: "e.g. Alex", goalWeight: "Goal weight", dailyTargets: "Daily targets",
+    createProfile: "Create profile", welcomeDesc: "Enter a few details so we can calculate your calorie and macro targets. You can change them anytime.",
+    getStarted: "Get started", skip: "Skip", hello: "Hi", bodyData: "Body data",
+  },
+};
+
+/* ============================================================
+   ПОМОЩНИ ФУНКЦИИ
+   ============================================================ */
+const uid = () => Math.random().toString(36).slice(2, 10);
+
+function mifflinBMR({ sex, weight, height, age }) {
+  const base = 10 * weight + 6.25 * height - 5 * age;
+  return sex === "female" ? base - 161 : base + 5;
+}
+
+function computePlan(profile, macros) {
+  const bmr = mifflinBMR(profile);
+  const mult = ACTIVITY.find((a) => a.id === profile.activity)?.mult ?? 1.2;
+  const tdee = bmr * mult;
+  let calories;
+  if (profile.manualCalories != null && profile.manualCalories !== "") {
+    calories = Number(profile.manualCalories);
+  } else {
+    const delta = GOALS.find((g) => g.id === profile.goal)?.delta ?? 0;
+    calories = tdee + delta;
+  }
+  calories = Math.max(0, Math.round(calories));
+  return {
+    bmr, tdee, calories,
+    protein: (calories * macros.protein) / 100 / 4,
+    carbs: (calories * macros.carbs) / 100 / 4,
+    fat: (calories * macros.fat) / 100 / 9,
+  };
+}
+
+// Превръща "1/2", "3/4", "1.5", "2 бр" в число
+function parseQty(s) {
+  if (typeof s === "number") return s;
+  if (s == null) return 0;
+  const clean = String(s).replace(",", ".").replace(/[^0-9./]/g, "");
+  if (clean.includes("/")) {
+    const [a, b] = clean.split("/");
+    const n = parseFloat(a) / parseFloat(b);
+    return isFinite(n) ? n : 0;
+  }
+  const n = parseFloat(clean);
+  return isFinite(n) ? n : 0;
+}
+
+const round = (n, d = 1) => {
+  const m = Math.pow(10, d);
+  return Math.round((n + Number.EPSILON) * m) / m;
+};
+const fmt = (n, d = 1) => {
+  if (n == null || isNaN(n)) return "0";
+  const r = round(n, d);
+  return Number.isInteger(r) ? String(r) : String(r);
+};
+const unitLabel = (u) => (u === "piece" ? "1 бр" : "100 g");
+
+// Дати
+const iso = (d) => {
+  const x = new Date(d);
+  return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, "0")}-${String(x.getDate()).padStart(2, "0")}`;
+};
+const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+const mondayOf = (d) => {
+  const x = new Date(d);
+  const wd = (x.getDay() + 6) % 7; // 0 = понеделник
+  return addDays(x, -wd);
+};
+const longDate = (d, lang = "bg") => { const x = new Date(d); return `${DAYS[lang][(x.getDay() + 6) % 7]}, ${x.getDate()} ${MONTHS[lang][x.getMonth()]}`; };
+
+// Сметки за списък хранения
+// За продукти на 100 г количеството (qty) е в ГРАМОВЕ → коефициент = грамове / 100.
+// За продукти "на брой" qty е броят парчета.
+function entryFactor(product, qty) {
+  return product.unit === "piece" ? qty : qty / 100;
+}
+function entryTotals(entry, products) {
+  // AI / свободен запис със собствени стойности (qty = множител порции)
+  if (entry.custom) {
+    const q = entry.qty || 1;
+    const c = entry.custom;
+    return { cal: c.cal * q, protein: c.protein * q, carbs: c.carbs * q, fat: c.fat * q };
+  }
+  const p = products.find((x) => x.id === entry.productId);
+  if (!p) return { cal: 0, protein: 0, carbs: 0, fat: 0 };
+  const f = entryFactor(p, entry.qty);
+  return { cal: p.cal * f, protein: p.protein * f, carbs: p.carbs * f, fat: p.fat * f };
+}
+// Подразбиращо се количество и етикет според вида на продукта
+const defaultAmount = (p) => (p.unit === "piece" ? 1 : 100);
+const amountLabel = (p, qty) => (p.unit === "piece" ? `${fmt(qty)} бр` : `${fmt(qty, 0)} г`);
+const clampGrams = (n) => Math.min(200, Math.max(1, Math.round(n)));
+function sumTotals(list) {
+  return list.reduce((a, b) => ({
+    cal: a.cal + b.cal, protein: a.protein + b.protein,
+    carbs: a.carbs + b.carbs, fat: a.fat + b.fat,
+  }), { cal: 0, protein: 0, carbs: 0, fat: 0 });
+}
+const emptyDay = () => ({ breakfast: [], lunch: [], dinner: [], snack: [] });
+
+// ---- микронутриенти ----
+const zeroMicros = () => MICRO_KEYS.reduce((o, k) => ((o[k] = 0), o), {});
+const getProductMicros = (p) => (p && (p.micros || PRODUCT_MICROS[p.id])) || null;
+function entryMicros(entry, products) {
+  const out = zeroMicros();
+  if (entry.custom) {
+    const q = entry.qty || 1;
+    const m = entry.custom.micros;
+    if (m) MICRO_KEYS.forEach((k) => (out[k] = (Number(m[k]) || 0) * q));
+    return out;
+  }
+  const p = products.find((x) => x.id === entry.productId);
+  const m = getProductMicros(p);
+  if (!p || !m) return out;
+  const f = entryFactor(p, entry.qty);
+  MICRO_KEYS.forEach((k) => (out[k] = (Number(m[k]) || 0) * f));
+  return out;
+}
+function sumMicros(list) {
+  const out = zeroMicros();
+  list.forEach((m) => MICRO_KEYS.forEach((k) => (out[k] += m[k] || 0)));
+  return out;
+}
+function dayMicros(entries, products) {
+  return sumMicros(entries.map((e) => entryMicros(e, products)));
+}
+
+// ---- рецепти ----
+function recipeTotals(recipe, products) {
+  const macro = sumTotals((recipe.ingredients || []).map((ing) => entryTotals({ productId: ing.productId, qty: ing.qty }, products)));
+  const micro = sumMicros((recipe.ingredients || []).map((ing) => entryMicros({ productId: ing.productId, qty: ing.qty }, products)));
+  const s = Math.max(1, recipe.servings || 1);
+  const per = { cal: macro.cal / s, protein: macro.protein / s, carbs: macro.carbs / s, fat: macro.fat / s };
+  const perMicro = {}; MICRO_KEYS.forEach((k) => (perMicro[k] = micro[k] / s));
+  return { total: macro, micro, per, perMicro, servings: s };
+}
+
+/* ============================================================
+   НАЧАЛНО СЪСТОЯНИЕ + СЪХРАНЕНИЕ
+   ============================================================ */
+const STORAGE_KEY = "kalorii-tracker:v4";
+
+function initialState() {
+  const todayMonday = iso(mondayOf(new Date()));
+  return {
+    profile: { name: "", sex: "male", weight: 101, height: 190, age: 35, activity: "high", goal: "maintain", manualCalories: null, goalWeight: null },
+    profileSetupDone: false,
+    macros: { protein: 30, carbs: 40, fat: 30 },
+    products: SAMPLE_PRODUCTS,
+    diary: {
+      [iso(new Date())]: {
+        breakfast: [
+          { id: uid(), productId: "p6", qty: 100 },
+          { id: uid(), productId: "p7", qty: 75 },
+          { id: uid(), productId: "p1", qty: 50 },
+          { id: uid(), productId: "p15", qty: 200 },
+          { id: uid(), productId: "p3", qty: 100 },
+          { id: uid(), productId: "p19", qty: 2 },
+          { id: uid(), productId: "p5", qty: 25 },
+        ],
+        lunch: [], dinner: [], snack: [],
+      },
+    },
+    shopping: { manual: [], autoChecked: {} },
+    recipes: [
+      {
+        id: "r1", name: "Протеинова закуска", nameEn: "Protein breakfast", category: "breakfast",
+        tags: ["високобелтъчно"], servings: 1, favorite: true,
+        ingredients: [
+          { productId: "p19", qty: 2 },   // 2 яйца
+          { productId: "p6", qty: 100 },  // аспержи
+          { productId: "p7", qty: 50 },   // авокадо
+        ],
+      },
+    ],
+    prefs: { allergies: "", diet: "", note: "" },
+    chat: [],
+    weights: (() => {
+      const w = {};
+      for (let i = 0; i < 14; i++) {
+        const base = 101 - i * 0.12;
+        w[iso(addDays(new Date(), -i))] = Math.round((base + (Math.random() - 0.5)) * 10) / 10;
+      }
+      return w;
+    })(),
+    lang: "bg",
+    selectedDate: iso(new Date()),
+    weekStart: todayMonday,
+  };
+}
+
+const hasStorage = () => typeof window !== "undefined" && window.storage && typeof window.storage.get === "function";
+
+/* ============================================================
+   STORE (Context API)
+   ============================================================ */
+const StoreCtx = createContext(null);
+const useStore = () => useContext(StoreCtx);
+
+function StoreProvider({ children }) {
+  const [state, setState] = useState(initialState);
+  const [loaded, setLoaded] = useState(false);
+  const saveTimer = useRef(null);
+
+  // зареждане
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      if (hasStorage()) {
+        try {
+          const r = await window.storage.get(STORAGE_KEY);
+          if (alive && r && r.value) {
+            const parsed = JSON.parse(r.value);
+            setState((s) => ({ ...s, ...parsed }));
+          }
+        } catch (e) { /* първо стартиране или липсва ключ */ }
+      }
+      if (alive) setLoaded(true);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  // запис (с debounce)
+  useEffect(() => {
+    if (!loaded || !hasStorage()) return;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(async () => {
+      try { await window.storage.set(STORAGE_KEY, JSON.stringify(state)); } catch (e) { /* игнор */ }
+    }, 400);
+    return () => saveTimer.current && clearTimeout(saveTimer.current);
+  }, [state, loaded]);
+
+  const patch = useCallback((fn) => setState((s) => ({ ...s, ...fn(s) })), []);
+
+  const actions = useMemo(() => ({
+    setProfile: (p) => patch((s) => ({ profile: { ...s.profile, ...p } })),
+    finishSetup: () => patch(() => ({ profileSetupDone: true })),
+    setMacros: (m) => patch((s) => ({ macros: { ...s.macros, ...m } })),
+
+    addProduct: (prod) => patch((s) => ({ products: [{ ...prod, id: uid() }, ...s.products] })),
+    updateProduct: (id, prod) => patch((s) => ({ products: s.products.map((x) => (x.id === id ? { ...x, ...prod } : x)) })),
+    deleteProduct: (id) => patch((s) => ({ products: s.products.filter((x) => x.id !== id) })),
+
+    setSelectedDate: (d) => patch(() => ({ selectedDate: d })),
+    setLang: (l) => patch(() => ({ lang: l })),
+    setWeight: (date, kg) => patch((s) => ({ weights: { ...(s.weights || {}), [date]: kg } })),
+    deleteWeight: (date) => patch((s) => { const w = { ...(s.weights || {}) }; delete w[date]; return { weights: w }; }),
+    setWeekStart: (d) => patch(() => ({ weekStart: d })),
+
+    addEntry: (date, meal, productId, qty) => patch((s) => {
+      const day = s.diary[date] ? { ...s.diary[date] } : emptyDay();
+      day[meal] = [...day[meal], { id: uid(), productId, qty }];
+      return { diary: { ...s.diary, [date]: day } };
+    }),
+    addCustomEntry: (date, meal, custom) => patch((s) => {
+      const day = s.diary[date] ? { ...s.diary[date] } : emptyDay();
+      day[meal] = [...day[meal], { id: uid(), custom, qty: 1 }];
+      return { diary: { ...s.diary, [date]: day } };
+    }),
+    updateEntry: (date, meal, entryId, qty) => patch((s) => {
+      const day = { ...(s.diary[date] || emptyDay()) };
+      day[meal] = day[meal].map((e) => (e.id === entryId ? { ...e, qty } : e));
+      return { diary: { ...s.diary, [date]: day } };
+    }),
+    deleteEntry: (date, meal, entryId) => patch((s) => {
+      const day = { ...(s.diary[date] || emptyDay()) };
+      day[meal] = day[meal].filter((e) => e.id !== entryId);
+      return { diary: { ...s.diary, [date]: day } };
+    }),
+
+    // рецепти
+    addRecipe: (r) => patch((s) => ({ recipes: [{ ...r, id: uid() }, ...(s.recipes || [])] })),
+    updateRecipe: (id, r) => patch((s) => ({ recipes: (s.recipes || []).map((x) => (x.id === id ? { ...x, ...r } : x)) })),
+    deleteRecipe: (id) => patch((s) => ({ recipes: (s.recipes || []).filter((x) => x.id !== id) })),
+    toggleFavRecipe: (id) => patch((s) => ({ recipes: (s.recipes || []).map((x) => (x.id === id ? { ...x, favorite: !x.favorite } : x)) })),
+    duplicateRecipe: (id) => patch((s) => {
+      const r = (s.recipes || []).find((x) => x.id === id); if (!r) return {};
+      const copy = { ...r, id: uid(), favorite: false, name: r.name + " (копие)", nameEn: r.nameEn ? r.nameEn + " (copy)" : undefined };
+      return { recipes: [copy, ...s.recipes] };
+    }),
+    // логване на рецепта като свободен запис в дневника
+    logRecipe: (date, meal, recipe, servingsEaten, products) => patch((s) => {
+      const rt = recipeTotals(recipe, products);
+      const k = servingsEaten || 1;
+      const micros = {}; MICRO_KEYS.forEach((mk) => (micros[mk] = rt.perMicro[mk] * k));
+      const custom = {
+        name: (s.lang === "en" && recipe.nameEn ? recipe.nameEn : recipe.name),
+        cal: rt.per.cal * k, protein: rt.per.protein * k, carbs: rt.per.carbs * k, fat: rt.per.fat * k, micros,
+      };
+      const day = s.diary[date] ? { ...s.diary[date] } : emptyDay();
+      day[meal] = [...day[meal], { id: uid(), custom, qty: 1 }];
+      return { diary: { ...s.diary, [date]: day } };
+    }),
+
+    // предпочитания
+    setPrefs: (p) => patch((s) => ({ prefs: { ...(s.prefs || {}), ...p } })),
+    // AI чат
+    pushChat: (msg) => patch((s) => ({ chat: [...(s.chat || []), msg] })),
+    clearChat: () => patch(() => ({ chat: [] })),
+
+    addManual: (text) => patch((s) => ({ shopping: { ...s.shopping, manual: [...s.shopping.manual, { id: uid(), text, checked: false }] } })),
+    toggleManual: (id) => patch((s) => ({ shopping: { ...s.shopping, manual: s.shopping.manual.map((m) => (m.id === id ? { ...m, checked: !m.checked } : m)) } })),
+    deleteManual: (id) => patch((s) => ({ shopping: { ...s.shopping, manual: s.shopping.manual.filter((m) => m.id !== id) } })),
+    toggleAuto: (name) => patch((s) => ({ shopping: { ...s.shopping, autoChecked: { ...s.shopping.autoChecked, [name]: !s.shopping.autoChecked[name] } } })),
+
+    importState: (obj) => setState((s) => ({ ...s, ...obj })),
+    importProducts: (list) => patch((s) => ({ products: [...list, ...s.products] })),
+    reset: () => setState(initialState()),
+  }), [patch]);
+
+  return <StoreCtx.Provider value={{ state, actions, loaded }}>{children}</StoreCtx.Provider>;
+}
+
+/* ============================================================
+   UI ПРИМИТИВИ
+   ============================================================ */
+function SectionBar({ children, color = t.teal }) {
+  return (
+    <div style={{ background: color, color: "#fff", textAlign: "center", fontWeight: 600,
+      fontSize: 14, padding: "9px 12px", borderRadius: 10, letterSpacing: 0.2 }}>
+      {children}
+    </div>
+  );
+}
+
+function Card({ children, style }) {
+  return (
+    <div style={{ background: "#fff", border: `1px solid ${t.line}`, borderRadius: 16,
+      padding: 16, boxShadow: "0 1px 2px rgba(14,85,89,0.04)", ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Field({ label, children }) {
+  return (
+    <label style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0", borderBottom: `1px solid ${t.line}` }}>
+      <span style={{ color: t.ink, fontSize: 14, fontWeight: 500 }}>{label}</span>
+      <span style={{ flexShrink: 0 }}>{children}</span>
+    </label>
+  );
+}
+
+const inputStyle = {
+  fontFamily: FONT, fontSize: 15, color: t.ink, textAlign: "right", width: 110,
+  border: `1px solid ${t.line}`, borderRadius: 9, padding: "8px 10px", background: t.bgSoft, outline: "none",
+};
+
+function NumInput({ value, onChange, suffix, width = 110 }) {
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <input type="number" inputMode="decimal" value={value} onChange={(e) => onChange(e.target.value)}
+        style={{ ...inputStyle, width }} />
+      {suffix && <span style={{ color: t.muted, fontSize: 13 }}>{suffix}</span>}
+    </span>
+  );
+}
+
+function Segmented({ options, value, onChange }) {
+  return (
+    <div style={{ display: "inline-flex", background: t.tealPale, borderRadius: 10, padding: 3, gap: 3 }}>
+      {options.map((o) => {
+        const active = o.value === value;
+        return (
+          <button key={o.value} onClick={() => onChange(o.value)}
+            style={{ border: "none", cursor: "pointer", fontFamily: FONT, fontSize: 13, fontWeight: 600,
+              padding: "7px 14px", borderRadius: 8, color: active ? "#fff" : t.tealDark,
+              background: active ? t.teal : "transparent", transition: "all .15s" }}>
+            {o.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+function Select({ value, onChange, options, full }) {
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)}
+      style={{ fontFamily: FONT, fontSize: 14, color: t.ink, background: t.bgSoft,
+        border: `1px solid ${t.line}`, borderRadius: 9, padding: "9px 10px", outline: "none",
+        width: full ? "100%" : "auto", appearance: "auto" }}>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+    </select>
+  );
+}
+
+function Button({ children, onClick, variant = "primary", style, type = "button" }) {
+  const styles = {
+    primary: { background: t.coral, color: "#fff", border: "none" },
+    teal: { background: t.teal, color: "#fff", border: "none" },
+    ghost: { background: "transparent", color: t.tealDark, border: `1px solid ${t.line}` },
+    danger: { background: "#fff", color: t.warn, border: `1px solid ${t.coralLight}` },
+  }[variant];
+  return (
+    <button type={type} onClick={onClick}
+      style={{ ...styles, cursor: "pointer", fontFamily: FONT, fontWeight: 600, fontSize: 14,
+        padding: "11px 16px", borderRadius: 11, display: "inline-flex", alignItems: "center",
+        justifyContent: "center", gap: 7, ...style }}>
+      {children}
+    </button>
+  );
+}
+
+function Modal({ title, onClose, children }) {
+  return (
+    <div onClick={onClose} style={{ position: "fixed", inset: 0, background: "rgba(20,50,55,0.45)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center", zIndex: 50, padding: 0 }}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "#fff", width: "100%", maxWidth: 460,
+        borderRadius: "18px 18px 0 0", padding: 18, maxHeight: "88vh", overflowY: "auto",
+        animation: "slideUp .22s ease" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+          <h3 style={{ margin: 0, fontSize: 17, color: t.ink, fontWeight: 700 }}>{title}</h3>
+          <button onClick={onClose} style={{ border: "none", background: t.tealPale, borderRadius: 9,
+            width: 34, height: 34, display: "grid", placeItems: "center", cursor: "pointer", color: t.tealDark }}>
+            <X size={18} />
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// Малки прогрес-барове за макроси
+function MacroBar({ label, value, target, color }) {
+  const pct = target > 0 ? Math.min(100, (value / target) * 100) : 0;
+  const over = value > target && target > 0;
+  return (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+        <span style={{ color: t.muted, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: t.ink }}>{fmt(value)} / {fmt(target)} г</span>
+      </div>
+      <div style={{ height: 8, background: t.tealPale, borderRadius: 6, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: over ? t.warn : color, borderRadius: 6, transition: "width .3s" }} />
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 1 — КАЛКУЛАТОР
+   ============================================================ */
+function CalculatorScreen() {
+  const { state, actions } = useStore();
+  const { profile, macros } = state;
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const lab = (o) => (L === "en" ? o.labelEn : o.label);
+  const plan = computePlan(profile, macros);
+  const macroSum = macros.protein + macros.carbs + macros.fat;
+  const macroOk = macroSum === 100;
+  const useManual = profile.manualCalories != null && profile.manualCalories !== "";
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("calcSection")}</SectionBar>
+
+      <Card>
+        <Field label={tr("sex")}>
+          <Segmented value={profile.sex} onChange={(v) => actions.setProfile({ sex: v })}
+            options={[{ value: "male", label: tr("male") }, { value: "female", label: tr("female") }]} />
+        </Field>
+        <Field label={tr("weight")}><NumInput value={profile.weight} onChange={(v) => actions.setProfile({ weight: Number(v) })} suffix={tr("kg")} /></Field>
+        <Field label={tr("height")}><NumInput value={profile.height} onChange={(v) => actions.setProfile({ height: Number(v) })} suffix={tr("cm")} /></Field>
+        <Field label={tr("age")}><NumInput value={profile.age} onChange={(v) => actions.setProfile({ age: Number(v) })} suffix={tr("yr")} /></Field>
+        <Field label={tr("activityLevel")}>
+          <Select value={profile.activity} onChange={(v) => actions.setProfile({ activity: v })}
+            options={ACTIVITY.map((a) => ({ value: a.id, label: lab(a) }))} />
+        </Field>
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <StatTile label={tr("bmr")} value={fmt(plan.bmr)} unit={tr("kcal")} />
+          <StatTile label={tr("multiplier")} value={ACTIVITY.find((a) => a.id === profile.activity)?.mult} unit="" />
+          <StatTile label={tr("tdee")} value={fmt(plan.tdee)} unit={tr("kcal")} highlight />
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 10 }}>{tr("goal")}</div>
+        <Segmented value={profile.goal} onChange={(v) => actions.setProfile({ goal: v })}
+          options={GOALS.map((g) => ({ value: g.id, label: lab(g) }))} />
+        <div style={{ marginTop: 14 }}>
+          <Field label={tr("manualCalories")}>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <input type="checkbox" checked={useManual} onChange={(e) => actions.setProfile({ manualCalories: e.target.checked ? Math.round(plan.tdee) : null })}
+                style={{ width: 18, height: 18, accentColor: t.coral }} />
+              {useManual && <NumInput width={90} value={profile.manualCalories} onChange={(v) => actions.setProfile({ manualCalories: v })} suffix={tr("kcal")} />}
+            </span>
+          </Field>
+        </div>
+        <div style={{ marginTop: 14, background: t.tealDark, borderRadius: 12, padding: "16px 18px", textAlign: "center", color: "#fff" }}>
+          <div style={{ fontSize: 13, opacity: 0.85 }}>{tr("dailyGoal")}</div>
+          <div style={{ fontSize: 34, fontWeight: 800, lineHeight: 1.1 }}>{fmt(plan.calories, 0)}</div>
+          <div style={{ fontSize: 12, opacity: 0.8 }}>{tr("kcalPerDay")}</div>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <span style={{ fontWeight: 700, color: t.ink }}>{tr("macroSplit")}</span>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: macroOk ? t.good : t.warn }}>
+            {tr("sum")}: {macroSum}% {macroOk ? "✓" : "≠ 100%"}
+          </span>
+        </div>
+        <Field label={<span style={{ color: t.protein }}>● {tr("protein")}</span>}>
+          <NumInput width={80} value={macros.protein} onChange={(v) => actions.setMacros({ protein: Number(v) })} suffix="%" />
+        </Field>
+        <Field label={<span style={{ color: t.carbs }}>● {tr("carbs")}</span>}>
+          <NumInput width={80} value={macros.carbs} onChange={(v) => actions.setMacros({ carbs: Number(v) })} suffix="%" />
+        </Field>
+        <Field label={<span style={{ color: t.fat }}>● {tr("fat")}</span>}>
+          <NumInput width={80} value={macros.fat} onChange={(v) => actions.setMacros({ fat: Number(v) })} suffix="%" />
+        </Field>
+        {!macroOk && (
+          <div style={{ marginTop: 10, fontSize: 12.5, color: t.warn, display: "flex", gap: 6, alignItems: "center" }}>
+            <AlertTriangle size={14} /> {tr("macroWarn")}
+          </div>
+        )}
+        <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+          <StatTile label={tr("protein")} value={fmt(plan.protein)} unit={tr("g")} color={t.protein} />
+          <StatTile label={tr("carbsS")} value={fmt(plan.carbs)} unit={tr("g")} color={t.carbs} />
+          <StatTile label={tr("fat")} value={fmt(plan.fat)} unit={tr("g")} color={t.fat} />
+        </div>
+      </Card>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <SectionBar>{tr("activityLevels")}</SectionBar>
+        <div>
+          {ACTIVITY.map((a, i) => (
+            <div key={a.id} style={{ display: "flex", gap: 10, padding: "10px 14px", borderBottom: i < ACTIVITY.length - 1 ? `1px solid ${t.line}` : "none", background: i % 2 ? t.bgSoft : "#fff" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: t.ink }}>{lab(a)}</div>
+                <div style={{ fontSize: 12, color: t.muted, marginTop: 2 }}>{L === "en" ? a.defEn : a.def}</div>
+              </div>
+              <div style={{ fontWeight: 800, color: t.teal, fontSize: 15, alignSelf: "center" }}>{a.mult}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function StatTile({ label, value, unit, highlight, color }) {
+  return (
+    <div style={{ flex: 1, background: highlight ? t.coralLight : t.tealPale, borderRadius: 12, padding: "12px 8px", textAlign: "center" }}>
+      <div style={{ fontSize: 11.5, color: color || t.muted, fontWeight: 700, marginBottom: 3 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: highlight ? t.coralDark : (color || t.ink), lineHeight: 1 }}>{value}</div>
+      {unit && <div style={{ fontSize: 10.5, color: t.muted, marginTop: 2 }}>{unit}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 2 — ПРОДУКТИ
+   ============================================================ */
+function ProductsScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const [q, setQ] = useState("");
+  const [editing, setEditing] = useState(null); // обект продукт или {} за нов
+
+  const filtered = useMemo(() => {
+    const s = q.trim().toLowerCase();
+    return state.products.filter((p) => (p.name + " " + (p.nameEn || "")).toLowerCase().includes(s));
+  }, [q, state.products]);
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.teal}>{tr("productList")}</SectionBar>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${t.line}`, borderRadius: 11, padding: "0 12px" }}>
+          <Search size={17} color={t.muted} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("searchProduct")}
+            style={{ border: "none", outline: "none", fontFamily: FONT, fontSize: 15, padding: "11px 0", flex: 1, color: t.ink, background: "transparent" }} />
+          {q && <button onClick={() => setQ("")} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted }}><X size={16} /></button>}
+        </div>
+        <Button onClick={() => setEditing({})}><Plus size={18} /> {tr("add")}</Button>
+      </div>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 52px 50px 44px 44px 44px", gap: 0, background: t.tealDark, color: "#fff", fontSize: 11, fontWeight: 700, padding: "9px 12px" }}>
+          <span>{tr("food")}</span><span style={{ textAlign: "center" }}>{tr("serving")}</span>
+          <span style={{ textAlign: "center" }}>{tr("calS")}</span><span style={{ textAlign: "center", color: t.protein }}>{tr("pS")}</span>
+          <span style={{ textAlign: "center", color: t.coralLight }}>{tr("cS")}</span><span style={{ textAlign: "center", color: t.tealLight }}>{tr("fS")}</span>
+        </div>
+        {filtered.length === 0 && <div style={{ padding: 24, textAlign: "center", color: t.muted, fontSize: 14 }}>{tr("noProducts")}</div>}
+        {filtered.map((p, i) => (
+          <div key={p.id} onClick={() => setEditing(p)}
+            style={{ display: "grid", gridTemplateColumns: "1fr 52px 50px 44px 44px 44px", alignItems: "center",
+              padding: "11px 12px", borderBottom: `1px solid ${t.line}`, background: i % 2 ? t.bgSoft : "#fff", cursor: "pointer", fontSize: 13 }}>
+            <span style={{ color: t.ink, fontWeight: 600 }}>{productName(p, L)}</span>
+            <span style={{ textAlign: "center", color: t.muted, fontSize: 11.5 }}>{p.unit === "piece" ? tr("pc1") : tr("g100")}</span>
+            <span style={{ textAlign: "center", color: t.ink, fontWeight: 700 }}>{p.cal}</span>
+            <span style={{ textAlign: "center", color: t.muted }}>{p.protein}</span>
+            <span style={{ textAlign: "center", color: t.muted }}>{p.carbs}</span>
+            <span style={{ textAlign: "center", color: t.muted }}>{p.fat}</span>
+          </div>
+        ))}
+      </Card>
+      <div style={{ fontSize: 12, color: t.muted, textAlign: "center" }}>{tr("productsNote")}</div>
+
+      {editing && <ProductModal product={editing} onClose={() => setEditing(null)}
+        onSave={(prod) => { editing.id ? actions.updateProduct(editing.id, prod) : actions.addProduct(prod); setEditing(null); }}
+        onDelete={editing.id ? () => { actions.deleteProduct(editing.id); setEditing(null); } : null} />}
+    </div>
+  );
+}
+
+function ProductModal({ product, onClose, onSave, onDelete }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const [f, setF] = useState({
+    name: product.name || "", nameEn: product.nameEn || "", unit: product.unit || "100g",
+    cal: product.cal ?? "", protein: product.protein ?? "", carbs: product.carbs ?? "", fat: product.fat ?? "",
+  });
+  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const valid = f.name.trim() && f.cal !== "";
+
+  return (
+    <Modal title={product.id ? tr("editProduct") : tr("newProduct")} onClose={onClose}>
+      <div style={{ display: "grid", gap: 4 }}>
+        <Field label={tr("name")}>
+          <input value={f.name} onChange={(e) => set("name", e.target.value)} placeholder={tr("namePlaceholder")}
+            style={{ ...inputStyle, width: 180, textAlign: "left" }} />
+        </Field>
+        <Field label={tr("unit")}>
+          <Segmented value={f.unit} onChange={(v) => set("unit", v)}
+            options={[{ value: "100g", label: tr("g100") }, { value: "piece", label: tr("pc1") }]} />
+        </Field>
+        <Field label={tr("caloriesField")}><NumInput width={90} value={f.cal} onChange={(v) => set("cal", v)} suffix={tr("kcal")} /></Field>
+        <Field label={<span style={{ color: t.protein }}>{tr("protein")}</span>}><NumInput width={90} value={f.protein} onChange={(v) => set("protein", v)} suffix={tr("g")} /></Field>
+        <Field label={<span style={{ color: t.carbs }}>{tr("carbs")}</span>}><NumInput width={90} value={f.carbs} onChange={(v) => set("carbs", v)} suffix={tr("g")} /></Field>
+        <Field label={<span style={{ color: t.fat }}>{tr("fat")}</span>}><NumInput width={90} value={f.fat} onChange={(v) => set("fat", v)} suffix={tr("g")} /></Field>
+      </div>
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        {onDelete && <Button variant="danger" onClick={onDelete}><Trash2 size={16} /> {tr("delete")}</Button>}
+        <Button variant="primary" style={{ flex: 1, opacity: valid ? 1 : 0.5 }}
+          onClick={() => valid && onSave({ name: f.name.trim(), nameEn: f.nameEn.trim() || undefined, unit: f.unit, cal: Number(f.cal) || 0, protein: Number(f.protein) || 0, carbs: Number(f.carbs) || 0, fat: Number(f.fat) || 0 })}>
+          <Check size={17} /> {tr("save")}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 3 — ДНЕВНИК
+   ============================================================ */
+function DiaryScreen() {
+  const { state, actions } = useStore();
+  const { products, selectedDate } = state;
+  const plan = computePlan(state.profile, state.macros);
+  const day = state.diary[selectedDate] || emptyDay();
+  const [adding, setAdding] = useState(null); // meal id
+  const [aiMeal, setAiMeal] = useState(null); // meal id за AI
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const lab = (o) => (L === "en" ? o.labelEn : o.label);
+
+  const mealTotals = MEALS.map((m) => ({ ...m, totals: sumTotals(day[m.id].map((e) => entryTotals(e, products))) }));
+  const dayTotal = sumTotals(mealTotals.map((m) => m.totals));
+
+  const pct = (v, p) => (p > 0 ? Math.round((v / p) * 100) : 0);
+  const remaining = { cal: plan.calories - dayTotal.cal, protein: plan.protein - dayTotal.protein, carbs: plan.carbs - dayTotal.carbs, fat: plan.fat - dayTotal.fat };
+
+  const donutData = [
+    { name: tr("protein"), value: round(dayTotal.protein), color: t.protein },
+    { name: tr("carbsS"), value: round(dayTotal.carbs), color: t.carbs },
+    { name: tr("fat"), value: round(dayTotal.fat), color: t.fat },
+  ];
+  const hasFood = dayTotal.cal > 0;
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      {/* избор на ден */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: t.tealDark, borderRadius: 12, padding: "8px 10px", color: "#fff" }}>
+        <button onClick={() => actions.setSelectedDate(iso(addDays(selectedDate, -1)))} style={navBtn}><ChevronLeft size={20} /></button>
+        <div style={{ textAlign: "center" }}>
+          <div style={{ fontWeight: 700, fontSize: 15 }}>{longDate(selectedDate, L)}</div>
+          <button onClick={() => actions.setSelectedDate(iso(new Date()))} style={{ background: "none", border: "none", color: t.tealLight, fontSize: 11, cursor: "pointer", marginTop: 1 }}>{tr("today")}</button>
+        </div>
+        <button onClick={() => actions.setSelectedDate(iso(addDays(selectedDate, 1)))} style={navBtn}><ChevronRight size={20} /></button>
+      </div>
+
+      {/* обобщение */}
+      <Card>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, textAlign: "center" }}>
+          {[
+            { l: tr("calories"), v: fmt(dayTotal.cal, 0), p: pct(dayTotal.cal, plan.calories), c: t.tealDark },
+            { l: tr("protein"), v: fmt(dayTotal.protein), p: pct(dayTotal.protein, plan.protein), c: t.protein },
+            { l: tr("carbsS"), v: fmt(dayTotal.carbs), p: pct(dayTotal.carbs, plan.carbs), c: t.carbs },
+            { l: tr("fat"), v: fmt(dayTotal.fat), p: pct(dayTotal.fat, plan.fat), c: t.fat },
+          ].map((x) => (
+            <div key={x.l}>
+              <div style={{ fontSize: 11, color: t.muted, fontWeight: 700 }}>{x.l}</div>
+              <div style={{ fontSize: 19, fontWeight: 800, color: x.c }}>{x.v}</div>
+              <div style={{ fontSize: 10.5, color: t.muted }}>{x.p}%</div>
+            </div>
+          ))}
+        </div>
+        <div style={{ height: 1, background: t.line, margin: "12px 0" }} />
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 8, textAlign: "center" }}>
+          {[
+            { l: tr("remainingKcal"), v: fmt(remaining.cal, 0) },
+            { l: tr("protein"), v: fmt(remaining.protein) },
+            { l: tr("carbsS"), v: fmt(remaining.carbs) },
+            { l: tr("fat"), v: fmt(remaining.fat) },
+          ].map((x) => (
+            <div key={x.l}>
+              <div style={{ fontSize: 10, color: t.muted }}>{x.l}</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: Number(x.v) < 0 ? t.warn : t.good }}>{x.v}</div>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      {/* donut за деня */}
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 4, fontSize: 14 }}>{tr("macroSplitG")}</div>
+        {hasFood ? (
+          <div style={{ height: 210 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <PieChart>
+                <Pie data={donutData} dataKey="value" nameKey="name" innerRadius={55} outerRadius={85} paddingAngle={2} stroke="none">
+                  {donutData.map((d, i) => <Cell key={i} fill={d.color} />)}
+                </Pie>
+                <Tooltip formatter={(v, n) => [`${fmt(v)} ${tr("g")}`, n]} contentStyle={tooltipStyle} />
+                <Legend verticalAlign="bottom" iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+              </PieChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <EmptyHint text={tr("addFoodsHint")} />}
+      </Card>
+
+      {/* хранения */}
+      {mealTotals.map((m) => (
+        <Card key={m.id} style={{ padding: 0, overflow: "hidden" }}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: t.coral, color: "#fff", padding: "9px 14px" }}>
+            <span style={{ fontWeight: 700, fontSize: 14 }}>{lab(m)}</span>
+            <span style={{ fontSize: 12.5, fontWeight: 600, opacity: 0.95 }}>{fmt(m.totals.cal, 0)} {tr("kcal")}</span>
+          </div>
+          {day[m.id].length === 0 && <div style={{ padding: "14px", color: t.muted, fontSize: 13, textAlign: "center" }}>{tr("noProductsAdded")}</div>}
+          {day[m.id].map((e) => {
+            const isCustom = !!e.custom;
+            const p = isCustom ? null : products.find((x) => x.id === e.productId);
+            if (!isCustom && !p) return null;
+            const tot = entryTotals(e, products);
+            const isPiece = !isCustom && p.unit === "piece";
+            const name = isCustom ? e.custom.name : productName(p, L);
+            return (
+              <div key={e.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 14px", borderBottom: `1px solid ${t.line}` }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13.5, fontWeight: 600, color: t.ink, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {isCustom && <Sparkles size={11} color={t.coral} style={{ marginRight: 4, verticalAlign: "middle" }} />}{name}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: t.muted }}>{tr("pS")} {fmt(tot.protein)} · {tr("cS")} {fmt(tot.carbs)} · {tr("fS")} {fmt(tot.fat)}</div>
+                </div>
+                <span style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                  <input value={e.qty}
+                    onChange={(ev) => {
+                      const raw = Number(ev.target.value) || 0;
+                      const val = (isCustom || isPiece) ? Math.max(1, raw) : clampGrams(raw);
+                      actions.updateEntry(selectedDate, m.id, e.id, val);
+                    }}
+                    style={{ ...inputStyle, width: 58, textAlign: "center", padding: "6px" }}
+                    type="number" inputMode="numeric"
+                    min={1} max={(isCustom || isPiece) ? undefined : 200} step={(isCustom || isPiece) ? 1 : 5} />
+                  <span style={{ fontSize: 11, color: t.muted, width: 14 }}>{isCustom ? "×" : (isPiece ? tr("pc") : tr("g"))}</span>
+                </span>
+                <div style={{ width: 50, textAlign: "right", fontWeight: 700, color: t.ink, fontSize: 13.5 }}>{fmt(tot.cal, 0)}</div>
+                <button onClick={() => actions.deleteEntry(selectedDate, m.id, e.id)} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted, padding: 4 }}><Trash2 size={16} /></button>
+              </div>
+            );
+          })}
+          <div style={{ display: "flex", borderTop: `1px solid ${t.line}` }}>
+            <button onClick={() => setAdding(m.id)} style={{ flex: 1, border: "none", background: t.tealPale, color: t.tealDark, fontFamily: FONT, fontWeight: 600, fontSize: 13.5, padding: "11px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Plus size={16} /> {tr("addProductBtn")}
+            </button>
+            <button onClick={() => setAiMeal(m.id)} style={{ width: 92, border: "none", borderLeft: `1px solid ${t.line}`, background: t.coralLight, color: t.coralDark, fontFamily: FONT, fontWeight: 700, fontSize: 13.5, padding: "11px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+              <Sparkles size={15} /> {tr("aiBtn")}
+            </button>
+          </div>
+        </Card>
+      ))}
+
+      {adding && <AddEntryModal meal={MEALS.find((m) => m.id === adding)} products={products}
+        onClose={() => setAdding(null)}
+        onAdd={(pid, qty) => { actions.addEntry(selectedDate, adding, pid, qty); setAdding(null); }} />}
+
+      {aiMeal && <AIModal meal={MEALS.find((m) => m.id === aiMeal)} lang={L}
+        onClose={() => setAiMeal(null)}
+        onAdd={(items) => { items.forEach((it) => actions.addCustomEntry(selectedDate, aiMeal, it)); setAiMeal(null); }} />}
+    </div>
+  );
+}
+
+function AddEntryModal({ meal, products, onClose, onAdd }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const lab = (o) => (L === "en" ? o.labelEn : o.label);
+  const [q, setQ] = useState("");
+  const [picked, setPicked] = useState(null);
+  const [qty, setQty] = useState(100);
+  const filtered = products.filter((p) => (p.name + " " + (p.nameEn || "")).toLowerCase().includes(q.trim().toLowerCase())).slice(0, 40);
+
+  const pick = (p) => { setPicked(p); setQty(defaultAmount(p)); };
+  const isPiece = picked && picked.unit === "piece";
+  const f = picked ? entryFactor(picked, qty) : 0;
+  const uLabel = (p) => (p.unit === "piece" ? tr("pc1") : tr("g100"));
+
+  return (
+    <Modal title={`${lab(meal)} — ${tr("addTo")}`} onClose={onClose}>
+      {!picked ? (
+        <>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: t.bgSoft, border: `1px solid ${t.line}`, borderRadius: 11, padding: "0 12px", marginBottom: 10 }}>
+            <Search size={17} color={t.muted} />
+            <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("searchProduct")}
+              style={{ border: "none", outline: "none", fontFamily: FONT, fontSize: 15, padding: "11px 0", flex: 1, background: "transparent", color: t.ink }} />
+          </div>
+          <div style={{ maxHeight: "50vh", overflowY: "auto" }}>
+            {filtered.map((p) => (
+              <button key={p.id} onClick={() => pick(p)} style={{ width: "100%", textAlign: "left", border: "none", borderBottom: `1px solid ${t.line}`, background: "#fff", padding: "11px 4px", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", fontFamily: FONT }}>
+                <span style={{ fontSize: 14, color: t.ink, fontWeight: 600 }}>{productName(p, L)}</span>
+                <span style={{ fontSize: 12, color: t.muted }}>{p.cal} {tr("kcal")} / {uLabel(p)}</span>
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <div>
+          <div style={{ background: t.tealPale, borderRadius: 12, padding: 14, marginBottom: 14 }}>
+            <div style={{ fontWeight: 700, color: t.ink, fontSize: 15 }}>{productName(picked, L)}</div>
+            <div style={{ fontSize: 12.5, color: t.muted, marginTop: 2 }}>{tr("perUnit")} {uLabel(picked)}: {picked.cal} {tr("kcal")} · {tr("pS")} {picked.protein} · {tr("cS")} {picked.carbs} · {tr("fS")} {picked.fat}</div>
+          </div>
+
+          {isPiece ? (
+            <Field label={tr("count")}>
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+                <button onClick={() => setQty((x) => Math.max(1, x - 1))} style={stepBtn}><Minus size={16} /></button>
+                <span style={{ minWidth: 34, textAlign: "center", fontSize: 18, fontWeight: 800, color: t.ink }}>{qty}</span>
+                <button onClick={() => setQty((x) => x + 1)} style={stepBtn}><Plus size={16} /></button>
+              </span>
+            </Field>
+          ) : (
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 600, color: t.ink }}>{tr("amount")}</span>
+                <span><span style={{ fontSize: 22, fontWeight: 800, color: t.coral }}>{qty}</span><span style={{ fontSize: 13, color: t.muted, marginLeft: 3 }}>{tr("g")}</span></span>
+              </div>
+              <input type="range" min={1} max={200} step={1} value={qty}
+                onChange={(e) => setQty(clampGrams(Number(e.target.value)))}
+                style={{ width: "100%", accentColor: t.coral }} />
+              <div style={{ display: "flex", gap: 7, marginTop: 12, flexWrap: "wrap" }}>
+                {[25, 50, 100, 150, 200].map((g) => {
+                  const active = qty === g;
+                  return (
+                    <button key={g} onClick={() => setQty(g)}
+                      style={{ flex: 1, minWidth: 54, border: `1px solid ${active ? t.coral : t.line}`, background: active ? t.coralLight : "#fff",
+                        color: active ? t.coralDark : t.ink, fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: "9px 4px", borderRadius: 9, cursor: "pointer" }}>
+                      {g} {tr("g")}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <div style={{ fontSize: 12.5, color: t.muted, margin: "14px 0" }}>
+            = {fmt(picked.cal * f, 0)} {tr("kcal")} · {tr("pS")} {fmt(picked.protein * f)} · {tr("cS")} {fmt(picked.carbs * f)} · {tr("fS")} {fmt(picked.fat * f)}
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Button variant="ghost" onClick={() => setPicked(null)}>{tr("back")}</Button>
+            <Button variant="primary" style={{ flex: 1 }} onClick={() => onAdd(picked.id, qty || defaultAmount(picked))}><Check size={17} /> {tr("add")}</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+const stepBtn = { width: 38, height: 38, borderRadius: 10, border: `1px solid ${t.line}`, background: t.tealPale, color: t.tealDark, display: "grid", placeItems: "center", cursor: "pointer" };
+
+function AIModal({ meal, lang, onClose, onAdd }) {
+  const tr = (k) => STR[lang][k] ?? k;
+  const lab = (o) => (lang === "en" ? o.labelEn : o.label);
+  const [text, setText] = useState("");
+  const [image, setImage] = useState(null); // { dataUrl, base64 }
+  const [loading, setLoading] = useState(false);
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState("");
+  const fileRef = useRef(null);
+
+  // смаляване до макс ~1024px и конвертиране към JPEG (нормализира и HEIC)
+  const onPickImage = (ev) => {
+    const file = ev.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new window.Image();
+      img.onload = () => {
+        const max = 1024;
+        const scale = Math.min(1, max / Math.max(img.width, img.height));
+        const w = Math.round(img.width * scale), h = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.82);
+        setImage({ dataUrl, base64: dataUrl.split(",")[1] });
+        setItems(null); setError("");
+      };
+      img.onerror = () => setError(tr("aiError"));
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    ev.target.value = "";
+  };
+
+  const analyze = async () => {
+    if (!text.trim() && !image) return;
+    setLoading(true); setError(""); setItems(null);
+    const langName = lang === "en" ? "English" : "Bulgarian";
+    const instr =
+      `You are a nutrition estimation engine. ` +
+      (image ? `Identify the foods visible in the photo and estimate the nutrition for the portions shown. ` : "") +
+      (text.trim() ? `Use this description${image ? " as extra context" : ""}: """${text.trim()}""". ` : "") +
+      `Break the meal into individual food items. Respond with ONLY a JSON object, no markdown, no commentary, in this exact shape: ` +
+      `{"items":[{"name":"<short food name in ${langName}>","grams":<number, estimated grams or ml eaten>,` +
+      `"cal":<number>,"protein":<number>,"carbs":<number>,"fat":<number>,` +
+      `"micros":{"fiber":<g>,"sugar":<g>,"satfat":<g>,"sodium":<mg>,"potassium":<mg>,"calcium":<mg>,"magnesium":<mg>,"iron":<mg>,"zinc":<mg>,"vitA":<µg>,"vitC":<mg>,"vitD":<µg>,"vitE":<mg>,"vitK":<µg>,"vitB12":<µg>}}]}. ` +
+      `All nutrition numbers (macros AND micros) are TOTALS for the eaten portion (not per 100 g). Macros rounded to integers. ` +
+      `Use realistic average values. If there is no food, return {"items":[]}.`;
+    const content = [];
+    if (image) content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: image.base64 } });
+    content.push({ type: "text", text: instr });
+    try {
+      const res = await fetch(AI_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: [{ role: "user", content }] }),
+      });
+      const data = await res.json();
+      const raw = (data.content || []).map((b) => b.text || "").join("").trim();
+      let clean = raw.replace(/```json/gi, "").replace(/```/g, "").trim();
+      const a = clean.indexOf("{"), z = clean.lastIndexOf("}");
+      if (a >= 0 && z > a) clean = clean.slice(a, z + 1);
+      const parsed = JSON.parse(clean);
+      const list = (parsed.items || parsed || []).map((x) => {
+        const micros = {}; MICRO_KEYS.forEach((k) => (micros[k] = Math.round((Number(x.micros?.[k]) || 0) * 10) / 10));
+        return {
+          name: String(x.name || "?"),
+          grams: Math.round(Number(x.grams) || 0),
+          cal: Math.round(Number(x.cal) || 0),
+          protein: Math.round(Number(x.protein) || 0),
+          carbs: Math.round(Number(x.carbs) || 0),
+          fat: Math.round(Number(x.fat) || 0),
+          micros, _on: true,
+        };
+      });
+      setItems(list);
+    } catch (e) {
+      setError(tr("aiError"));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggle = (i) => setItems((arr) => arr.map((x, j) => (j === i ? { ...x, _on: !x._on } : x)));
+  const chosen = items ? items.filter((x) => x._on) : [];
+  const totals = chosen.reduce((a, b) => ({ cal: a.cal + b.cal, protein: a.protein + b.protein, carbs: a.carbs + b.carbs, fat: a.fat + b.fat }), { cal: 0, protein: 0, carbs: 0, fat: 0 });
+
+  const add = () => {
+    if (!chosen.length) return;
+    onAdd(chosen.map((x) => ({ name: x.grams ? `${x.name} (~${x.grams} ${tr("g")})` : x.name, cal: x.cal, protein: x.protein, carbs: x.carbs, fat: x.fat, micros: x.micros })));
+  };
+
+  const canAnalyze = (text.trim() || image) && !loading;
+
+  return (
+    <Modal title={`${lab(meal)} · ${tr("aiTitle")}`} onClose={onClose}>
+      <div style={{ display: "flex", gap: 7, alignItems: "center", background: t.coralLight, color: t.coralDark, padding: "9px 12px", borderRadius: 10, fontSize: 12.5, marginBottom: 12 }}>
+        <Sparkles size={16} /> <span>{tr("aiDesc")}</span>
+      </div>
+
+      {/* снимка */}
+      <input ref={fileRef} type="file" accept="image/*" capture="environment" onChange={onPickImage} style={{ display: "none" }} />
+      {image ? (
+        <div style={{ position: "relative", marginBottom: 10 }}>
+          <img src={image.dataUrl} alt="" style={{ width: "100%", maxHeight: 220, objectFit: "cover", borderRadius: 12, border: `1px solid ${t.line}` }} />
+          <button onClick={() => setImage(null)} title={tr("aiRemovePhoto")}
+            style={{ position: "absolute", top: 8, right: 8, border: "none", background: "rgba(20,50,55,0.7)", color: "#fff", width: 32, height: 32, borderRadius: 8, cursor: "pointer", display: "grid", placeItems: "center" }}>
+            <X size={16} />
+          </button>
+        </div>
+      ) : (
+        <button onClick={() => fileRef.current?.click()}
+          style={{ width: "100%", border: `1.5px dashed ${t.teal}`, background: t.tealPale, color: t.tealDark, fontFamily: FONT, fontWeight: 700, fontSize: 14, padding: "14px", borderRadius: 12, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 10 }}>
+          <Camera size={18} /> {tr("aiPhoto")}
+        </button>
+      )}
+
+      <div style={{ textAlign: "center", fontSize: 11.5, color: t.muted, margin: "2px 0 8px" }}>— {tr("aiOr")} —</div>
+
+      <textarea value={text} onChange={(e) => setText(e.target.value)} placeholder={tr("aiPlaceholder")} rows={3}
+        style={{ width: "100%", fontFamily: FONT, fontSize: 14, color: t.ink, border: `1px solid ${t.line}`, borderRadius: 11, padding: "11px 12px", background: t.bgSoft, outline: "none", resize: "vertical" }} />
+
+      <Button variant="primary" onClick={analyze} style={{ width: "100%", marginTop: 10, opacity: canAnalyze ? 1 : 0.6 }}>
+        {loading ? <><Loader2 size={17} className="spin" /> {tr("aiAnalyzing")}</> : <><Sparkles size={17} /> {tr("aiAnalyze")}</>}
+      </Button>
+
+      {error && <div style={{ marginTop: 12, color: t.warn, fontSize: 13, display: "flex", gap: 6, alignItems: "center" }}><AlertTriangle size={15} /> {error}</div>}
+
+      {items && items.length === 0 && <div style={{ marginTop: 14, color: t.muted, fontSize: 13, textAlign: "center" }}>{tr("aiNoItems")}</div>}
+
+      {items && items.length > 0 && (
+        <div style={{ marginTop: 14 }}>
+          {items.map((it, i) => (
+            <div key={i} onClick={() => toggle(i)} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 4px", borderBottom: `1px solid ${t.line}`, cursor: "pointer", opacity: it._on ? 1 : 0.45 }}>
+              <input type="checkbox" checked={it._on} readOnly style={{ width: 18, height: 18, accentColor: t.coral }} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 600, color: t.ink }}>{it.name} {it.grams ? <span style={{ color: t.muted, fontWeight: 400 }}>~{it.grams} {tr("g")}</span> : null}</div>
+                <div style={{ fontSize: 11.5, color: t.muted }}>{tr("pS")} {it.protein} · {tr("cS")} {it.carbs} · {tr("fS")} {it.fat}</div>
+              </div>
+              <div style={{ fontWeight: 700, color: t.ink, fontSize: 13.5 }}>{it.cal} {tr("kcal")}</div>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 4px", fontWeight: 700, color: t.tealDark }}>
+            <span>Σ {chosen.length}</span>
+            <span>{totals.cal} {tr("kcal")} · {tr("pS")} {totals.protein} · {tr("cS")} {totals.carbs} · {tr("fS")} {totals.fat}</span>
+          </div>
+          <Button variant="primary" onClick={add} style={{ width: "100%", opacity: chosen.length ? 1 : 0.5 }}><Check size={17} /> {tr("aiAddAll")}</Button>
+          <div style={{ fontSize: 11, color: t.muted, textAlign: "center", marginTop: 8 }}>{tr("aiEst")} · AI</div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+
+/* ============================================================
+   ЕКРАН 4 — СЕДМИЦА
+   ============================================================ */
+function WeekScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const plan = computePlan(state.profile, state.macros);
+  const start = new Date(state.weekStart);
+
+  const week = DAYS[L].map((label, i) => {
+    const date = iso(addDays(start, i));
+    const day = state.diary[date] || emptyDay();
+    const totals = sumTotals(MEALS.flatMap((m) => day[m.id]).map((e) => entryTotals(e, state.products)));
+    return { label, short: DAYS_SHORT_I[L][i], date, ...totals };
+  });
+
+  const avg = {
+    cal: week.reduce((a, d) => a + d.cal, 0) / 7,
+    protein: week.reduce((a, d) => a + d.protein, 0) / 7,
+    carbs: week.reduce((a, d) => a + d.carbs, 0) / 7,
+    fat: week.reduce((a, d) => a + d.fat, 0) / 7,
+  };
+
+  const calData = week.map((d) => ({ name: d.short, kcal: round(d.cal, 0) }));
+  const macroData = week.map((d) => ({ name: d.short, [tr("protein")]: round(d.protein), [tr("carbsS")]: round(d.carbs), [tr("fat")]: round(d.fat) }));
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("weeklyTracker")}</SectionBar>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: "#fff", border: `1px solid ${t.line}`, borderRadius: 12, padding: "8px 10px" }}>
+        <button onClick={() => actions.setWeekStart(iso(addDays(start, -7)))} style={{ ...navBtn, color: t.tealDark }}><ChevronLeft size={20} /></button>
+        <div style={{ textAlign: "center", fontSize: 13.5, fontWeight: 700, color: t.ink }}>
+          {start.getDate()} {MONTHS[L][start.getMonth()]} – {addDays(start, 6).getDate()} {MONTHS[L][addDays(start, 6).getMonth()]}
+        </div>
+        <button onClick={() => actions.setWeekStart(iso(addDays(start, 7)))} style={{ ...navBtn, color: t.tealDark }}><ChevronRight size={20} /></button>
+      </div>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: t.coral, color: "#fff" }}>
+              <th style={thS}></th><th style={thS}>{tr("calS")}</th><th style={thS}>{tr("pS")}</th><th style={thS}>{tr("cS")}</th><th style={thS}>{tr("fS")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr style={{ background: t.bgSoft }}>
+              <td style={{ ...tdS, fontWeight: 700, textAlign: "left" }}>{tr("dailyPlan")}</td>
+              <td style={tdS}>{fmt(plan.calories, 0)}</td><td style={tdS}>{fmt(plan.protein)}</td><td style={tdS}>{fmt(plan.carbs)}</td><td style={tdS}>{fmt(plan.fat)}</td>
+            </tr>
+            <tr>
+              <td style={{ ...tdS, fontWeight: 700, textAlign: "left" }}>{tr("avgPerDay")}</td>
+              <td style={tdS}>{fmt(avg.cal, 0)}</td><td style={tdS}>{fmt(avg.protein)}</td><td style={tdS}>{fmt(avg.carbs)}</td><td style={tdS}>{fmt(avg.fat)}</td>
+            </tr>
+            <tr style={{ background: t.tealPale }}>
+              <td style={{ ...tdS, fontWeight: 700, textAlign: "left", color: t.tealDark }}>{tr("vsPlan")}</td>
+              {[["cal", "calories"], ["protein", "protein"], ["carbs", "carbs"], ["fat", "fat"]].map(([a, p]) => {
+                const diff = avg[a] - plan[p];
+                return <td key={a} style={{ ...tdS, color: diff > 0 ? t.warn : t.good, fontWeight: 700 }}>{diff >= 0 ? "+" : ""}{fmt(diff, 0)}</td>;
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 6, fontSize: 14 }}>{tr("caloriesByDay")}</div>
+        <div style={{ height: 220 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={calData} margin={{ top: 16, right: 6, left: -14, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={t.line} vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12, fill: t.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: t.muted }} axisLine={false} tickLine={false} />
+              <Tooltip cursor={{ fill: t.tealPale }} contentStyle={tooltipStyle} formatter={(v) => [`${v} ${tr("kcal")}`, tr("calories")]} />
+              <Bar dataKey="kcal" fill={t.teal} radius={[6, 6, 0, 0]}>
+                <LabelList dataKey="kcal" position="top" style={{ fontSize: 10, fill: t.muted }} />
+              </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 6, fontSize: 14 }}>{tr("macrosByDay")}</div>
+        <div style={{ height: 240 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={macroData} margin={{ top: 6, right: 6, left: -14, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={t.line} vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 12, fill: t.muted }} axisLine={false} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: t.muted }} axisLine={false} tickLine={false} />
+              <Tooltip cursor={{ fill: t.tealPale }} contentStyle={tooltipStyle} />
+              <Legend iconType="circle" wrapperStyle={{ fontSize: 12 }} />
+              <Bar dataKey={tr("protein")} stackId="a" fill={t.protein} />
+              <Bar dataKey={tr("carbsS")} stackId="a" fill={t.carbs} />
+              <Bar dataKey={tr("fat")} stackId="a" fill={t.fat} radius={[5, 5, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <SectionBar>{tr("weeklySummary")}</SectionBar>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: t.coral, color: "#fff" }}>
+              <th style={{ ...thS, textAlign: "left", paddingLeft: 12 }}>{tr("day")}</th><th style={thS}>{tr("calS")}</th><th style={thS}>{tr("pS")}</th><th style={thS}>{tr("cS")}</th><th style={thS}>{tr("fS")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {week.map((d, i) => (
+              <tr key={d.date} onClick={() => actions.setSelectedDate(d.date)} style={{ background: i % 2 ? t.bgSoft : "#fff", cursor: "pointer" }}>
+                <td style={{ ...tdS, textAlign: "left", paddingLeft: 12, fontWeight: 600 }}>{d.label}</td>
+                <td style={tdS}>{fmt(d.cal, 0)}</td><td style={tdS}>{fmt(d.protein)}</td><td style={tdS}>{fmt(d.carbs)}</td><td style={tdS}>{fmt(d.fat)}</td>
+              </tr>
+            ))}
+            <tr style={{ background: t.tealLight }}>
+              <td style={{ ...tdS, textAlign: "left", paddingLeft: 12, fontWeight: 800, color: t.tealDark }}>{tr("average")}</td>
+              <td style={{ ...tdS, fontWeight: 800 }}>{fmt(avg.cal, 0)}</td><td style={{ ...tdS, fontWeight: 800 }}>{fmt(avg.protein)}</td>
+              <td style={{ ...tdS, fontWeight: 800 }}>{fmt(avg.carbs)}</td><td style={{ ...tdS, fontWeight: 800 }}>{fmt(avg.fat)}</td>
+            </tr>
+          </tbody>
+        </table>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 5 — СПИСЪК ЗА ПАЗАР
+   ============================================================ */
+function ShoppingScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const [newItem, setNewItem] = useState("");
+
+  const start = new Date(state.weekStart);
+  const used = useMemo(() => {
+    const map = new Map();
+    for (let i = 0; i < 7; i++) {
+      const day = state.diary[iso(addDays(start, i))];
+      if (!day) continue;
+      MEALS.forEach((m) => day[m.id].forEach((e) => {
+        const p = state.products.find((x) => x.id === e.productId);
+        if (p) map.set(p.name, productName(p, L));
+      }));
+    }
+    return [...map.entries()].map(([key, label]) => ({ key, label })).sort((a, b) => a.label.localeCompare(b.label, L));
+  }, [state.diary, state.products, state.weekStart, L]);
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("shoppingList")}</SectionBar>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <SectionBar>{tr("manualList")}</SectionBar>
+        <div style={{ display: "flex", gap: 8, padding: 12 }}>
+          <input value={newItem} onChange={(e) => setNewItem(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && newItem.trim()) { actions.addManual(newItem.trim()); setNewItem(""); } }}
+            placeholder={tr("addShoppingItem")}
+            style={{ flex: 1, ...inputStyle, width: "auto", textAlign: "left" }} />
+          <Button onClick={() => { if (newItem.trim()) { actions.addManual(newItem.trim()); setNewItem(""); } }}><Plus size={18} /></Button>
+        </div>
+        {state.shopping.manual.length === 0 && <div style={{ padding: "0 12px 14px", color: t.muted, fontSize: 13 }}>{tr("noManual")}</div>}
+        {state.shopping.manual.map((m) => (
+          <div key={m.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderTop: `1px solid ${t.line}` }}>
+            <input type="checkbox" checked={m.checked} onChange={() => actions.toggleManual(m.id)} style={{ width: 19, height: 19, accentColor: t.coral }} />
+            <span style={{ flex: 1, fontSize: 14, color: m.checked ? t.muted : t.ink, textDecoration: m.checked ? "line-through" : "none" }}>{m.text}</span>
+            <button onClick={() => actions.deleteManual(m.id)} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted }}><Trash2 size={16} /></button>
+          </div>
+        ))}
+      </Card>
+
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <SectionBar>{tr("autoFromWeek")}</SectionBar>
+        {used.length === 0 && <div style={{ padding: 16, color: t.muted, fontSize: 13, textAlign: "center" }}>{tr("noWeekProducts")}</div>}
+        {used.map((u, i) => {
+          const checked = !!state.shopping.autoChecked[u.key];
+          return (
+            <div key={u.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", borderTop: i === 0 ? "none" : `1px solid ${t.line}`, background: i % 2 ? t.bgSoft : "#fff" }}>
+              <input type="checkbox" checked={checked} onChange={() => actions.toggleAuto(u.key)} style={{ width: 19, height: 19, accentColor: t.coral }} />
+              <span style={{ flex: 1, fontSize: 14, color: checked ? t.muted : t.ink, textDecoration: checked ? "line-through" : "none" }}>{u.label}</span>
+            </div>
+          );
+        })}
+      </Card>
+      <div style={{ fontSize: 12, color: t.muted, textAlign: "center" }}>{tr("shoppingNote")}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 6 — НАСТРОЙКИ (Export / Import / Reset)
+   ============================================================ */
+function SettingsScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const fileJson = useRef(null);
+  const fileCsv = useRef(null);
+  const [msg, setMsg] = useState("");
+  const flash = (m) => { setMsg(m); setTimeout(() => setMsg(""), 2500); };
+
+  const download = (filename, text, type) => {
+    const blob = new Blob([text], { type });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
+
+  const exportJson = () => { download("kalorii-tracker.json", JSON.stringify(state, null, 2), "application/json"); flash(tr("tExportedJson")); };
+  const exportCsv = () => {
+    const header = "name,nameEn,unit,cal,protein,carbs,fat";
+    const rows = state.products.map((p) => `"${p.name}","${p.nameEn || ""}",${p.unit === "piece" ? "1 бр" : "100 g"},${p.cal},${p.protein},${p.carbs},${p.fat}`);
+    download("produkti.csv", "\uFEFF" + [header, ...rows].join("\n"), "text/csv");
+    flash(tr("tExportedCsv"));
+  };
+
+  const importJson = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = () => { try { actions.importState(JSON.parse(r.result)); flash(tr("tImported")); } catch { flash(tr("tBadJson")); } };
+    r.readAsText(file); e.target.value = "";
+  };
+  const importCsv = (e) => {
+    const file = e.target.files?.[0]; if (!file) return;
+    const r = new FileReader();
+    r.onload = () => {
+      try {
+        const lines = String(r.result).replace(/^\uFEFF/, "").trim().split(/\r?\n/).slice(1);
+        const list = lines.map((line) => {
+          const m = line.match(/^"?(.*?)"?,"?(.*?)"?,(.*?),(.*?),(.*?),(.*?),(.*?)$/);
+          if (!m) return null;
+          const [, name, nameEn, unit, cal, protein, carbs, fat] = m;
+          return { id: uid(), name: name.trim(), nameEn: nameEn.trim() || undefined, unit: /бр|pc/.test(unit) ? "piece" : "100g", cal: +cal || 0, protein: +protein || 0, carbs: +carbs || 0, fat: +fat || 0 };
+        }).filter(Boolean);
+        actions.importProducts(list); flash(tr("tImportedN").replace("{n}", list.length));
+      } catch { flash(tr("tBadCsv")); }
+    };
+    r.readAsText(file); e.target.value = "";
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("title_settings")}</SectionBar>
+
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ fontWeight: 700, color: t.ink }}>{tr("language")}</span>
+          <Segmented value={L} onChange={(v) => actions.setLang(v)}
+            options={[{ value: "bg", label: STR.bg.bulgarian }, { value: "en", label: STR.en.english }]} />
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 12 }}>{tr("exportData")}</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          <Button variant="teal" onClick={exportJson}><Download size={17} /> {tr("exportAll")}</Button>
+          <Button variant="ghost" onClick={exportCsv}><Download size={17} /> {tr("exportProducts")}</Button>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 12 }}>{tr("importData")}</div>
+        <div style={{ display: "grid", gap: 10 }}>
+          <Button variant="ghost" onClick={() => fileJson.current?.click()}><Upload size={17} /> {tr("importAll")}</Button>
+          <Button variant="ghost" onClick={() => fileCsv.current?.click()}><Upload size={17} /> {tr("importProducts")}</Button>
+          <input ref={fileJson} type="file" accept=".json,application/json" onChange={importJson} style={{ display: "none" }} />
+          <input ref={fileCsv} type="file" accept=".csv,text/csv" onChange={importCsv} style={{ display: "none" }} />
+        </div>
+        <div style={{ fontSize: 12, color: t.muted, marginTop: 10 }}>{tr("csvNote")}</div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 12 }}>{tr("reset")}</div>
+        <Button variant="danger" onClick={() => { if (confirm(tr("resetConfirm"))) { actions.reset(); flash(tr("tResetDone")); } }}>
+          <RotateCcw size={17} /> {tr("resetAll")}
+        </Button>
+      </Card>
+
+      <div style={{ fontSize: 12, color: t.muted, textAlign: "center", lineHeight: 1.6 }}>
+        {tr("footer1")}<br />{tr("footer2")}
+      </div>
+
+      {msg && <div style={{ position: "fixed", bottom: 86, left: "50%", transform: "translateX(-50%)", background: t.tealDark, color: "#fff", padding: "10px 18px", borderRadius: 30, fontSize: 13, fontWeight: 600, zIndex: 60, boxShadow: "0 4px 16px rgba(0,0,0,0.2)" }}>{msg}</div>}
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН 7 — ТЕГЛО
+   ============================================================ */
+function WeightScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const weights = state.weights || {};
+  const [date, setDate] = useState(iso(new Date()));
+  const [val, setVal] = useState("");
+
+  // синхронизира полето със записа за избрания ден
+  useEffect(() => { setVal(weights[date] != null ? String(weights[date]) : ""); }, [date, weights]);
+
+  const entries = useMemo(
+    () => Object.entries(weights).map(([d, kg]) => ({ d, kg })).sort((a, b) => (a.d < b.d ? -1 : 1)),
+    [weights]
+  );
+
+  const within = (days) => {
+    const cut = iso(addDays(new Date(), -(days - 1)));
+    const vals = entries.filter((e) => e.d >= cut).map((e) => e.kg);
+    return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+  };
+  const avgW = within(7), avgM = within(30), avgY = within(365);
+  const latest = entries.length ? entries[entries.length - 1] : null;
+  const last7 = entries.filter((e) => e.d >= iso(addDays(new Date(), -6)));
+  const weekChange = last7.length >= 2 ? last7[last7.length - 1].kg - last7[0].kg : null;
+
+  const shortD = (d) => { const x = new Date(d); return L === "en" ? `${x.getMonth() + 1}/${x.getDate()}` : `${x.getDate()}.${x.getMonth() + 1}`; };
+  const chartData = entries.slice(-90).map((e) => ({ name: shortD(e.d), kg: e.kg }));
+
+  const save = () => { const n = Number(String(val).replace(",", ".")); if (n > 0) actions.setWeight(date, Math.round(n * 10) / 10); };
+
+  const avgTile = (label, period, v) => (
+    <div style={{ flex: 1, background: t.tealPale, borderRadius: 12, padding: "12px 8px", textAlign: "center" }}>
+      <div style={{ fontSize: 11, color: t.muted, fontWeight: 700 }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 800, color: t.tealDark, lineHeight: 1.1 }}>{v != null ? fmt(v) : "—"}</div>
+      <div style={{ fontSize: 10, color: t.muted }}>{period} · {tr("kg")}</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("title_weight")}</SectionBar>
+
+      {/* запис за деня */}
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+          <button onClick={() => setDate(iso(addDays(date, -1)))} style={{ ...navBtn, background: t.tealPale, color: t.tealDark }}><ChevronLeft size={20} /></button>
+          <div style={{ textAlign: "center" }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: t.ink }}>{longDate(date, L)}</div>
+            <button onClick={() => setDate(iso(new Date()))} style={{ background: "none", border: "none", color: t.coral, fontSize: 11, cursor: "pointer" }}>{tr("today")}</button>
+          </div>
+          <button onClick={() => setDate(iso(addDays(date, 1)))} style={{ ...navBtn, background: t.tealPale, color: t.tealDark }}><ChevronRight size={20} /></button>
+        </div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+          <span style={{ flex: 1, fontWeight: 600, color: t.ink }}>{tr("logWeight")}</span>
+          <input value={val} onChange={(e) => setVal(e.target.value)} type="number" inputMode="decimal" step="0.1" placeholder="—"
+            style={{ ...inputStyle, width: 90, textAlign: "center" }} />
+          <span style={{ color: t.muted, fontSize: 13 }}>{tr("kg")}</span>
+          <Button variant="primary" onClick={save}><Check size={16} /></Button>
+        </div>
+      </Card>
+
+      {/* текущо + промяна */}
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 12, color: t.muted, fontWeight: 700 }}>{tr("currentWeight")}</div>
+            <div style={{ fontSize: 32, fontWeight: 800, color: t.tealDark, lineHeight: 1.1 }}>{latest ? fmt(latest.kg) : "—"} <span style={{ fontSize: 15, color: t.muted, fontWeight: 600 }}>{tr("kg")}</span></div>
+          </div>
+          {weekChange != null && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 12, color: t.muted, fontWeight: 700 }}>{tr("change")} · {tr("last7")}</div>
+              <div style={{ fontSize: 20, fontWeight: 800, color: weekChange > 0 ? t.warn : t.good }}>{weekChange >= 0 ? "+" : ""}{fmt(weekChange)} {tr("kg")}</div>
+            </div>
+          )}
+        </div>
+      </Card>
+
+      {/* средни */}
+      <div style={{ display: "flex", gap: 10 }}>
+        {avgTile(tr("avgWeek"), tr("last7"), avgW)}
+        {avgTile(tr("avgMonth"), tr("last30"), avgM)}
+        {avgTile(tr("avgYear"), tr("last365"), avgY)}
+      </div>
+
+      {/* графика */}
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 6, fontSize: 14 }}>{tr("weightChart")}</div>
+        {chartData.length >= 2 ? (
+          <div style={{ height: 220 }}>
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={chartData} margin={{ top: 8, right: 10, left: -14, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke={t.line} vertical={false} />
+                <XAxis dataKey="name" tick={{ fontSize: 10, fill: t.muted }} axisLine={false} tickLine={false} minTickGap={20} />
+                <YAxis domain={["dataMin - 1", "dataMax + 1"]} tick={{ fontSize: 11, fill: t.muted }} axisLine={false} tickLine={false} width={34} />
+                <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`${fmt(v)} ${tr("kg")}`, tr("t_weight")]} />
+                <Line type="monotone" dataKey="kg" stroke={t.coral} strokeWidth={2.5} dot={{ r: 2.5, fill: t.coral }} activeDot={{ r: 5 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        ) : <EmptyHint text={tr("noWeight")} />}
+      </Card>
+
+      {/* история */}
+      <Card style={{ padding: 0, overflow: "hidden" }}>
+        <SectionBar>{tr("weightHistory")}</SectionBar>
+        {entries.length === 0 && <div style={{ padding: 16, color: t.muted, fontSize: 13, textAlign: "center" }}>{tr("noWeight")}</div>}
+        {entries.slice().reverse().map((e, i) => (
+          <div key={e.d} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "11px 14px", borderTop: i === 0 ? "none" : `1px solid ${t.line}`, background: i % 2 ? t.bgSoft : "#fff" }}>
+            <span style={{ fontSize: 13.5, color: t.ink }}>{longDate(e.d, L)}</span>
+            <span style={{ display: "inline-flex", alignItems: "center", gap: 12 }}>
+              <span style={{ fontWeight: 700, color: t.tealDark }}>{fmt(e.kg)} {tr("kg")}</span>
+              <button onClick={() => { actions.deleteWeight(e.d); }} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted, padding: 2 }}><Trash2 size={15} /></button>
+            </span>
+          </div>
+        ))}
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — РЕЦЕПТИ
+   ============================================================ */
+function RecipesScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const catLabel = (id) => { const c = RECIPE_CATEGORIES.find((x) => x.id === id); return c ? c[L] : id; };
+  const [q, setQ] = useState("");
+  const [cat, setCat] = useState("all");
+  const [favOnly, setFavOnly] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [logging, setLogging] = useState(null);
+  const recipes = state.recipes || [];
+
+  const filtered = recipes.filter((r) => {
+    const s = q.trim().toLowerCase();
+    const txt = (r.name + " " + (r.nameEn || "") + " " + (r.tags || []).join(" ")).toLowerCase();
+    return (!s || txt.includes(s)) && (cat === "all" || r.category === cat) && (!favOnly || r.favorite);
+  });
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("recipes")}</SectionBar>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ flex: 1, display: "flex", alignItems: "center", gap: 8, background: "#fff", border: `1px solid ${t.line}`, borderRadius: 11, padding: "0 12px" }}>
+          <Search size={17} color={t.muted} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("searchRecipe")}
+            style={{ border: "none", outline: "none", fontFamily: FONT, fontSize: 15, padding: "11px 0", flex: 1, color: t.ink, background: "transparent" }} />
+        </div>
+        <Button onClick={() => setEditing({})}><Plus size={18} /></Button>
+      </div>
+
+      <div style={{ display: "flex", gap: 7, overflowX: "auto", paddingBottom: 2 }}>
+        <Chip active={favOnly} onClick={() => setFavOnly((v) => !v)} icon={<Heart size={13} fill={favOnly ? t.coral : "none"} />}>{tr("favorites")}</Chip>
+        <Chip active={cat === "all"} onClick={() => setCat("all")}>{tr("allCategories")}</Chip>
+        {RECIPE_CATEGORIES.map((c) => <Chip key={c.id} active={cat === c.id} onClick={() => setCat(c.id)}>{c[L]}</Chip>)}
+      </div>
+
+      {filtered.length === 0 && <EmptyHint text={tr("noRecipes")} />}
+      {filtered.map((r) => {
+        const rt = recipeTotals(r, state.products);
+        return (
+          <Card key={r.id} style={{ padding: 0, overflow: "hidden" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", borderBottom: `1px solid ${t.line}` }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: 700, color: t.ink, fontSize: 15 }}>{L === "en" && r.nameEn ? r.nameEn : r.name}</div>
+                <div style={{ fontSize: 12, color: t.muted, marginTop: 1 }}>{catLabel(r.category)} · {r.servings} {tr("servings").toLowerCase()}{(r.tags || []).length ? " · " + r.tags.join(", ") : ""}</div>
+              </div>
+              <button onClick={() => actions.toggleFavRecipe(r.id)} style={{ border: "none", background: "none", cursor: "pointer", color: t.coral, padding: 4 }}>
+                <Heart size={20} fill={r.favorite ? t.coral : "none"} />
+              </button>
+            </div>
+            <div style={{ display: "flex", padding: "10px 14px", gap: 8, textAlign: "center" }}>
+              {[[tr("calS"), fmt(rt.per.cal, 0), t.tealDark], [tr("pS"), fmt(rt.per.protein), t.protein], [tr("cS"), fmt(rt.per.carbs), t.carbs], [tr("fS"), fmt(rt.per.fat), t.fat]].map(([l, v, c], i) => (
+                <div key={i} style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, color: t.muted, fontWeight: 700 }}>{l}</div>
+                  <div style={{ fontSize: 16, fontWeight: 800, color: c }}>{v}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ textAlign: "center", fontSize: 11, color: t.muted, paddingBottom: 8 }}>{tr("perServing")}</div>
+            <div style={{ display: "flex", borderTop: `1px solid ${t.line}` }}>
+              <button onClick={() => setLogging(r)} style={recipeBtn(t.coral, "#fff")}><Plus size={15} /> {tr("logRecipe")}</button>
+              <button onClick={() => setEditing(r)} style={recipeBtn(t.tealPale, t.tealDark)}><Pencil size={14} /> </button>
+              <button onClick={() => actions.duplicateRecipe(r.id)} style={recipeBtn(t.tealPale, t.tealDark)}><Copy size={14} /> </button>
+              <button onClick={() => actions.deleteRecipe(r.id)} style={recipeBtn("#fff", t.warn)}><Trash2 size={14} /> </button>
+            </div>
+          </Card>
+        );
+      })}
+      <div style={{ fontSize: 12, color: t.muted, textAlign: "center" }}>{tr("recipeNote")}</div>
+
+      {editing && <RecipeModal recipe={editing} onClose={() => setEditing(null)}
+        onSave={(r) => { editing.id ? actions.updateRecipe(editing.id, r) : actions.addRecipe(r); setEditing(null); }} />}
+      {logging && <RecipeLogModal recipe={logging} onClose={() => setLogging(null)}
+        onLog={(meal, servings) => { actions.logRecipe(state.selectedDate, meal, logging, servings, state.products); setLogging(null); }} />}
+    </div>
+  );
+}
+
+const recipeBtn = (bg, color) => ({ flex: 1, border: "none", borderRight: `1px solid ${t.line}`, background: bg, color, fontFamily: FONT, fontWeight: 700, fontSize: 13, padding: "11px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5 });
+
+function Chip({ children, active, onClick, icon }) {
+  return (
+    <button onClick={onClick} style={{ flexShrink: 0, display: "inline-flex", alignItems: "center", gap: 5, border: `1px solid ${active ? t.coral : t.line}`, background: active ? t.coralLight : "#fff", color: active ? t.coralDark : t.ink, fontFamily: FONT, fontWeight: 600, fontSize: 12.5, padding: "7px 12px", borderRadius: 20, cursor: "pointer" }}>
+      {icon}{children}
+    </button>
+  );
+}
+
+function RecipeModal({ recipe, onClose, onSave }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const products = state.products;
+  const [name, setName] = useState(recipe.name || "");
+  const [category, setCategory] = useState(recipe.category || "other");
+  const [tagsTxt, setTagsTxt] = useState((recipe.tags || []).join(", "));
+  const [servings, setServings] = useState(recipe.servings || 1);
+  const [ings, setIngs] = useState(recipe.ingredients ? [...recipe.ingredients] : []);
+  const [q, setQ] = useState("");
+  const valid = name.trim() && ings.length > 0;
+
+  const found = q.trim() ? products.filter((p) => (p.name + " " + (p.nameEn || "")).toLowerCase().includes(q.trim().toLowerCase())).slice(0, 6) : [];
+  const draft = { ingredients: ings, servings };
+  const rt = recipeTotals(draft, products);
+
+  return (
+    <Modal title={recipe.id ? tr("editRecipe") : tr("newRecipe")} onClose={onClose}>
+      <Field label={tr("recipeName")}><input value={name} onChange={(e) => setName(e.target.value)} style={{ ...inputStyle, width: 175, textAlign: "left" }} /></Field>
+      <Field label={tr("category")}>
+        <Select value={category} onChange={setCategory} options={RECIPE_CATEGORIES.map((c) => ({ value: c.id, label: c[L] }))} />
+      </Field>
+      <Field label={tr("servings")}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <button onClick={() => setServings((x) => Math.max(1, x - 1))} style={stepBtn}><Minus size={16} /></button>
+          <span style={{ minWidth: 28, textAlign: "center", fontSize: 17, fontWeight: 800, color: t.ink }}>{servings}</span>
+          <button onClick={() => setServings((x) => x + 1)} style={stepBtn}><Plus size={16} /></button>
+        </span>
+      </Field>
+      <Field label={tr("tags")}><input value={tagsTxt} onChange={(e) => setTagsTxt(e.target.value)} placeholder={tr("tagsPlaceholder")} style={{ ...inputStyle, width: 175, textAlign: "left" }} /></Field>
+
+      <div style={{ fontWeight: 700, color: t.ink, margin: "14px 0 8px" }}>{tr("ingredients")}</div>
+      {ings.map((ing, i) => {
+        const p = products.find((x) => x.id === ing.productId);
+        if (!p) return null;
+        const isPiece = p.unit === "piece";
+        return (
+          <div key={i} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: `1px solid ${t.line}` }}>
+            <span style={{ flex: 1, fontSize: 13.5, color: t.ink }}>{productName(p, L)}</span>
+            <input value={ing.qty} type="number" inputMode="numeric"
+              onChange={(e) => { const v = Number(e.target.value) || 0; setIngs((arr) => arr.map((x, j) => (j === i ? { ...x, qty: isPiece ? Math.max(1, v) : clampGrams(v) } : x))); }}
+              style={{ ...inputStyle, width: 56, textAlign: "center", padding: "6px" }} />
+            <span style={{ fontSize: 11, color: t.muted, width: 14 }}>{isPiece ? tr("pc") : tr("g")}</span>
+            <button onClick={() => setIngs((arr) => arr.filter((_, j) => j !== i))} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted }}><X size={16} /></button>
+          </div>
+        );
+      })}
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={tr("addIngredient") + "..."} style={{ ...inputStyle, width: "100%", textAlign: "left", marginTop: 8 }} />
+      {found.map((p) => (
+        <button key={p.id} onClick={() => { setIngs((arr) => [...arr, { productId: p.id, qty: defaultAmount(p) }]); setQ(""); }}
+          style={{ width: "100%", textAlign: "left", border: "none", borderBottom: `1px solid ${t.line}`, background: t.bgSoft, padding: "10px", cursor: "pointer", fontFamily: FONT, fontSize: 13.5, color: t.ink, display: "flex", justifyContent: "space-between" }}>
+          <span>{productName(p, L)}</span><span style={{ color: t.muted, fontSize: 12 }}>{p.cal} {tr("kcal")}</span>
+        </button>
+      ))}
+
+      <div style={{ background: t.tealPale, borderRadius: 12, padding: 12, marginTop: 14, fontSize: 12.5, color: t.ink }}>
+        <div style={{ display: "flex", justifyContent: "space-between", fontWeight: 700 }}><span>{tr("perServing")}</span><span>{fmt(rt.per.cal, 0)} {tr("kcal")}</span></div>
+        <div style={{ color: t.muted, marginTop: 2 }}>{tr("pS")} {fmt(rt.per.protein)} · {tr("cS")} {fmt(rt.per.carbs)} · {tr("fS")} {fmt(rt.per.fat)} · {MICROS[0][L]}: {fmt(rt.perMicro.fiber)} {tr("g")}</div>
+      </div>
+
+      <Button variant="primary" style={{ width: "100%", marginTop: 16, opacity: valid ? 1 : 0.5 }}
+        onClick={() => valid && onSave({ name: name.trim(), nameEn: recipe.nameEn, category, servings, tags: tagsTxt.split(",").map((x) => x.trim()).filter(Boolean), ingredients: ings })}>
+        <Check size={17} /> {tr("save")}
+      </Button>
+    </Modal>
+  );
+}
+
+function RecipeLogModal({ recipe, onClose, onLog }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const lab = (o) => (L === "en" ? o.labelEn : o.label);
+  const [meal, setMeal] = useState(recipe.category && MEALS.find((m) => m.id === recipe.category) ? recipe.category : "lunch");
+  const [servings, setServings] = useState(1);
+  const rt = recipeTotals(recipe, state.products);
+
+  return (
+    <Modal title={`${tr("logToMeal")} · ${L === "en" && recipe.nameEn ? recipe.nameEn : recipe.name}`} onClose={onClose}>
+      <Field label={tr("logToMeal")}>
+        <Select value={meal} onChange={setMeal} options={MEALS.map((m) => ({ value: m.id, label: lab(m) }))} />
+      </Field>
+      <Field label={tr("servingsEaten")}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 10 }}>
+          <button onClick={() => setServings((x) => Math.max(1, x - 1))} style={stepBtn}><Minus size={16} /></button>
+          <span style={{ minWidth: 28, textAlign: "center", fontSize: 17, fontWeight: 800, color: t.ink }}>{servings}</span>
+          <button onClick={() => setServings((x) => x + 1)} style={stepBtn}><Plus size={16} /></button>
+        </span>
+      </Field>
+      <div style={{ fontSize: 12.5, color: t.muted, margin: "12px 0" }}>
+        = {fmt(rt.per.cal * servings, 0)} {tr("kcal")} · {tr("pS")} {fmt(rt.per.protein * servings)} · {tr("cS")} {fmt(rt.per.carbs * servings)} · {tr("fS")} {fmt(rt.per.fat * servings)}
+      </div>
+      <Button variant="primary" style={{ width: "100%" }} onClick={() => onLog(meal, servings)}><Plus size={17} /> {tr("logToMeal")}</Button>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — МИКРОНУТРИЕНТИ
+   ============================================================ */
+function MicrosScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const sd = state.selectedDate;
+  const day = state.diary[sd] || emptyDay();
+  const todays = MEALS.flatMap((m) => day[m.id]);
+  const micros = dayMicros(todays, state.products);
+  const [sel, setSel] = useState("fiber");
+
+  const warnings = [];
+  MICROS.forEach((m) => {
+    const pct = m.rda ? (micros[m.key] / m.rda) * 100 : 0;
+    if (m.type === "limit" && pct > 100) warnings.push({ m, kind: "excess" });
+    if (m.type === "goal" && pct < 25) warnings.push({ m, kind: "low" });
+  });
+
+  const shortD = (d) => { const x = new Date(d); return L === "en" ? `${x.getMonth() + 1}/${x.getDate()}` : `${x.getDate()}.${x.getMonth() + 1}`; };
+  const hist = [...Array(14)].map((_, i) => {
+    const d = iso(addDays(new Date(), -(13 - i)));
+    const dd = state.diary[d] || emptyDay();
+    const mic = dayMicros(MEALS.flatMap((m) => dd[m.id]), state.products);
+    return { name: shortD(d), v: round(mic[sel], 1) };
+  });
+  const selMicro = MICROS.find((m) => m.key === sel);
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("micronutrients")}</SectionBar>
+
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", background: t.tealDark, borderRadius: 12, padding: "8px 10px", color: "#fff" }}>
+        <button onClick={() => actions.setSelectedDate(iso(addDays(sd, -1)))} style={navBtn}><ChevronLeft size={20} /></button>
+        <div style={{ fontWeight: 700, fontSize: 14 }}>{longDate(sd, L)}</div>
+        <button onClick={() => actions.setSelectedDate(iso(addDays(sd, 1)))} style={navBtn}><ChevronRight size={20} /></button>
+      </div>
+
+      {warnings.length > 0 && (
+        <Card style={{ padding: 12, background: t.coralLight, border: "none" }}>
+          {warnings.map((w, i) => (
+            <div key={i} style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, color: t.coralDark, padding: "2px 0" }}>
+              <AlertTriangle size={14} /> {w.m[L]}: {w.kind === "excess" ? tr("warnExcess") : tr("warnLow")}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      <Card style={{ padding: 14 }}>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 4 }}>{tr("dailyIntake")}</div>
+        {MICROS.map((m) => {
+          const v = micros[m.key]; const pct = m.rda ? (v / m.rda) * 100 : 0;
+          const over = m.type === "limit" && pct > 100;
+          const reached = m.type === "goal" && pct >= 100;
+          const col = over ? t.warn : reached ? t.good : t.teal;
+          return (
+            <div key={m.key} style={{ padding: "8px 0", borderBottom: `1px solid ${t.line}` }}>
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 4 }}>
+                <span style={{ color: t.ink, fontWeight: 600 }}>{m[L]}</span>
+                <span style={{ color: t.muted }}>{fmt(v)} / {m.rda} {m.unit} · <b style={{ color: col }}>{fmt(pct, 0)}%</b> {tr("ofRDA")}</span>
+              </div>
+              <div style={{ height: 7, background: t.tealPale, borderRadius: 5, overflow: "hidden" }}>
+                <div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: col }} />
+              </div>
+            </div>
+          );
+        })}
+      </Card>
+
+      <Card>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <span style={{ fontWeight: 700, color: t.ink, fontSize: 14 }}>{tr("nutrientHistory")}</span>
+          <Select value={sel} onChange={setSel} options={MICROS.map((m) => ({ value: m.key, label: m[L] }))} />
+        </div>
+        <div style={{ height: 200 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={hist} margin={{ top: 8, right: 10, left: -16, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={t.line} vertical={false} />
+              <XAxis dataKey="name" tick={{ fontSize: 10, fill: t.muted }} axisLine={false} tickLine={false} minTickGap={16} />
+              <YAxis tick={{ fontSize: 11, fill: t.muted }} axisLine={false} tickLine={false} width={34} />
+              <Tooltip contentStyle={tooltipStyle} formatter={(v) => [`${fmt(v)} ${selMicro.unit}`, selMicro[L]]} />
+              <Line type="monotone" dataKey="v" stroke={t.coral} strokeWidth={2.5} dot={{ r: 2, fill: t.coral }} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </Card>
+      <div style={{ fontSize: 12, color: t.muted, textAlign: "center" }}>{tr("microsNote")}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — AI АСИСТЕНТ (чат)
+   ============================================================ */
+function AIChatScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const [input, setInput] = useState("");
+  const [busy, setBusy] = useState(false);
+  const chat = state.chat || [];
+  const endRef = useRef(null);
+  useEffect(() => { endRef.current?.scrollIntoView({ behavior: "smooth" }); }, [chat.length, busy]);
+
+  const buildSystem = () => {
+    const plan = computePlan(state.profile, state.macros);
+    const day = state.diary[state.selectedDate] || emptyDay();
+    const todays = MEALS.flatMap((m) => day[m.id]);
+    const consumed = sumTotals(todays.map((e) => entryTotals(e, state.products)));
+    const mic = dayMicros(todays, state.products);
+    const rem = { cal: plan.calories - consumed.cal, protein: plan.protein - consumed.protein, carbs: plan.carbs - consumed.carbs, fat: plan.fat - consumed.fat };
+    const inv = state.products.map((p) => productName(p, L)).join(", ");
+    const recipeList = (state.recipes || []).map((r) => {
+      const rt = recipeTotals(r, state.products);
+      return `${L === "en" && r.nameEn ? r.nameEn : r.name} (${fmt(rt.per.cal, 0)} kcal/${tr("perServing")})`;
+    }).join("; ") || "—";
+    const today = iso(new Date());
+    const expiring = state.products.filter((p) => p.expiry && (new Date(p.expiry) - new Date(today)) / 86400000 <= 5)
+      .map((p) => `${productName(p, L)} (${p.expiry})`).join(", ") || "—";
+    const microGaps = MICROS.map((m) => `${m[L]} ${fmt(mic[m.key])}/${m.rda}${m.unit}`).join(", ");
+    const langName = L === "en" ? "English" : "Bulgarian";
+    return [
+      `You are a friendly, practical nutrition assistant inside a calorie-tracking app. Always answer in ${langName}.`,
+      `Be concise and actionable. When you propose a meal or recipe, give approximate calories and macros.`,
+      `You can: suggest meals from available products, generate recipes, propose substitutes for missing ingredients, optimize meals for the remaining macros/micros of the day, build daily/weekly meal plans, answer nutrition questions, and suggest ways to reduce food waste using items expiring soon.`,
+      ``,
+      `USER PROFILE: ${state.profile.name ? "name " + state.profile.name + ", " : ""}${state.profile.sex}, ${state.profile.weight}kg, ${state.profile.height}cm, ${state.profile.age}y, activity ${state.profile.activity}, goal ${state.profile.goal}${state.profile.goalWeight ? ", target weight " + state.profile.goalWeight + "kg" : ""}.`,
+      `DAILY TARGETS: ${plan.calories} kcal, protein ${fmt(plan.protein)}g, carbs ${fmt(plan.carbs)}g, fat ${fmt(plan.fat)}g.`,
+      `CONSUMED TODAY: ${fmt(consumed.cal, 0)} kcal, P ${fmt(consumed.protein)} / C ${fmt(consumed.carbs)} / F ${fmt(consumed.fat)}.`,
+      `REMAINING TODAY: ${fmt(rem.cal, 0)} kcal, P ${fmt(rem.protein)} / C ${fmt(rem.carbs)} / F ${fmt(rem.fat)}.`,
+      `MICRONUTRIENTS TODAY vs RDA: ${microGaps}.`,
+      `PREFERENCES — allergies: ${state.prefs?.allergies || "none"}; diet: ${state.prefs?.diet || "none"}; notes: ${state.prefs?.note || "none"}. NEVER suggest foods that conflict with the allergies.`,
+      `AVAILABLE PRODUCTS (inventory): ${inv}.`,
+      `SAVED RECIPES: ${recipeList}.`,
+      `PRODUCTS EXPIRING SOON: ${expiring}.`,
+    ].join("\n");
+  };
+
+  const send = async (txt) => {
+    const content = (txt ?? input).trim();
+    if (!content || busy) return;
+    setInput("");
+    const userMsg = { role: "user", content };
+    actions.pushChat(userMsg);
+    setBusy(true);
+    try {
+      const sys = buildSystem();
+      const convo = [...chat, userMsg].map((m) => ({ role: m.role, content: m.content }));
+      const apiMessages = convo.map((m, i) => (i === 0 ? { role: "user", content: sys + "\n\n---\n\n" + m.content } : m));
+      const res = await fetch(AI_ENDPOINT, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1000, messages: apiMessages }),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok || !data || data.error) {
+        const detail = (data && data.error && (data.error.message || data.error.type)) || ("HTTP " + res.status);
+        throw new Error(detail);
+      }
+      const reply = (data.content || []).map((b) => b.text || "").join("").trim();
+      actions.pushChat({ role: "assistant", content: reply || tr("aiError") });
+    } catch (e) {
+      actions.pushChat({ role: "assistant", content: tr("aiError") + "\n\n⚠️ " + (e && e.message ? e.message : String(e)) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const quicks = [["q_meal"], ["q_recipe"], ["q_plan"], ["q_waste"]];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", minHeight: "calc(100vh - 230px)" }}>
+      <div style={{ display: "flex", gap: 7, alignItems: "flex-start", background: t.coralLight, color: t.coralDark, padding: "9px 12px", borderRadius: 10, fontSize: 12.5, marginBottom: 12 }}>
+        <Sparkles size={16} style={{ flexShrink: 0, marginTop: 1 }} /> <span>{tr("aiChatHint")}</span>
+      </div>
+
+      {chat.length === 0 && (
+        <div style={{ display: "grid", gap: 8, marginBottom: 12 }}>
+          {quicks.map(([k]) => (
+            <button key={k} onClick={() => send(tr(k))} style={{ textAlign: "left", border: `1px solid ${t.line}`, background: "#fff", borderRadius: 12, padding: "12px 14px", cursor: "pointer", fontFamily: FONT, fontSize: 14, color: t.ink, display: "flex", alignItems: "center", gap: 8 }}>
+              <Sparkles size={15} color={t.coral} /> {tr(k)}
+            </button>
+          ))}
+        </div>
+      )}
+
+      <div style={{ flex: 1, display: "grid", gap: 10, alignContent: "start" }}>
+        {chat.map((m, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
+            <div style={{ maxWidth: "85%", whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.5, padding: "10px 13px", borderRadius: 14,
+              background: m.role === "user" ? t.teal : "#fff", color: m.role === "user" ? "#fff" : t.ink,
+              border: m.role === "user" ? "none" : `1px solid ${t.line}`, borderBottomRightRadius: m.role === "user" ? 4 : 14, borderBottomLeftRadius: m.role === "user" ? 14 : 4 }}>
+              {m.content}
+            </div>
+          </div>
+        ))}
+        {busy && <div style={{ display: "flex", gap: 6, alignItems: "center", color: t.muted, fontSize: 13 }}><Loader2 size={15} className="spin" /> {tr("thinking")}</div>}
+        <div ref={endRef} />
+      </div>
+
+      <div style={{ position: "sticky", bottom: 0, paddingTop: 10, background: t.bgSoft }}>
+        {chat.length > 0 && <button onClick={actions.clearChat} style={{ border: "none", background: "none", color: t.muted, fontSize: 12, cursor: "pointer", marginBottom: 6 }}>{tr("clearChat")}</button>}
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          <textarea value={input} onChange={(e) => setInput(e.target.value)} rows={1} placeholder={tr("askPlaceholder")}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
+            style={{ flex: 1, fontFamily: FONT, fontSize: 14, color: t.ink, border: `1px solid ${t.line}`, borderRadius: 12, padding: "11px 12px", background: "#fff", outline: "none", resize: "none", maxHeight: 120 }} />
+          <Button variant="primary" onClick={() => send()} style={{ opacity: input.trim() && !busy ? 1 : 0.6, padding: "11px 14px" }}><Send size={18} /></Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — ПРЕДПОЧИТАНИЯ
+   ============================================================ */
+function PreferencesScreen() {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const p = state.prefs || {};
+  const ta = { width: "100%", fontFamily: FONT, fontSize: 14, color: t.ink, border: `1px solid ${t.line}`, borderRadius: 11, padding: "11px 12px", background: t.bgSoft, outline: "none", resize: "vertical", marginTop: 6 };
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("preferences")}</SectionBar>
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink }}>{tr("allergies")}</div>
+        <textarea rows={2} value={p.allergies || ""} onChange={(e) => actions.setPrefs({ allergies: e.target.value })} placeholder={tr("allergiesPlaceholder")} style={ta} />
+        <div style={{ fontWeight: 700, color: t.ink, marginTop: 14 }}>{tr("diet")}</div>
+        <textarea rows={2} value={p.diet || ""} onChange={(e) => actions.setPrefs({ diet: e.target.value })} placeholder={tr("dietPlaceholder")} style={ta} />
+        <div style={{ fontSize: 12, color: t.muted, marginTop: 12 }}>{tr("prefNote")}</div>
+      </Card>
+    </div>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — ПРОФИЛ
+   ============================================================ */
+function initials(name) {
+  const parts = (name || "").trim().split(/\s+/).filter(Boolean).slice(0, 2);
+  return parts.map((w) => w[0]).join("").toUpperCase();
+}
+function Avatar({ name, size = 64 }) {
+  const ini = initials(name);
+  return (
+    <div style={{ width: size, height: size, borderRadius: "50%", background: t.tealDark, color: "#fff", display: "grid", placeItems: "center", fontWeight: 800, fontSize: size * 0.4, flexShrink: 0 }}>
+      {ini || <User size={size * 0.5} />}
+    </div>
+  );
+}
+
+function ProfileFields({ compact }) {
+  const { state, actions } = useStore();
+  const { profile } = state;
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const lab = (o) => (L === "en" ? o.labelEn : o.label);
+  return (
+    <>
+      <Field label={tr("sex")}>
+        <Segmented value={profile.sex} onChange={(v) => actions.setProfile({ sex: v })}
+          options={[{ value: "male", label: tr("male") }, { value: "female", label: tr("female") }]} />
+      </Field>
+      <Field label={tr("weight")}><NumInput value={profile.weight} onChange={(v) => actions.setProfile({ weight: Number(v) })} suffix={tr("kg")} /></Field>
+      <Field label={tr("height")}><NumInput value={profile.height} onChange={(v) => actions.setProfile({ height: Number(v) })} suffix={tr("cm")} /></Field>
+      <Field label={tr("age")}><NumInput value={profile.age} onChange={(v) => actions.setProfile({ age: Number(v) })} suffix={tr("yr")} /></Field>
+      <Field label={tr("activityLevel")}>
+        <Select value={profile.activity} onChange={(v) => actions.setProfile({ activity: v })}
+          options={ACTIVITY.map((a) => ({ value: a.id, label: lab(a) }))} />
+      </Field>
+      <Field label={tr("goal")}>
+        <Select value={profile.goal} onChange={(v) => actions.setProfile({ goal: v })}
+          options={GOALS.map((g) => ({ value: g.id, label: lab(g) }))} />
+      </Field>
+      {!compact && (
+        <Field label={tr("goalWeight")}>
+          <NumInput value={profile.goalWeight ?? ""} onChange={(v) => actions.setProfile({ goalWeight: v === "" ? null : Number(v) })} suffix={tr("kg")} />
+        </Field>
+      )}
+    </>
+  );
+}
+
+function ProfileScreen() {
+  const { state, actions } = useStore();
+  const { profile, macros } = state;
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const plan = computePlan(profile, macros);
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("profile")}</SectionBar>
+
+      <Card>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <Avatar name={profile.name} />
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, color: t.muted, fontWeight: 700, marginBottom: 4 }}>{tr("yourName")}</div>
+            <input value={profile.name || ""} onChange={(e) => actions.setProfile({ name: e.target.value })} placeholder={tr("profileNamePh")}
+              style={{ ...inputStyle, width: "100%", textAlign: "left", fontSize: 16, fontWeight: 700 }} />
+          </div>
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ fontWeight: 700, color: t.ink, marginBottom: 10 }}>{tr("bodyData")}</div>
+        <ProfileFields />
+      </Card>
+
+      <Card style={{ background: t.tealDark, border: "none" }}>
+        <div style={{ fontSize: 13, color: "#fff", opacity: 0.85, fontWeight: 700, marginBottom: 8 }}>{tr("dailyTargets")}</div>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", color: "#fff" }}>
+          <span style={{ fontSize: 30, fontWeight: 800 }}>{fmt(plan.calories, 0)}</span>
+          <span style={{ fontSize: 13, opacity: 0.85 }}>{tr("kcalPerDay")}</span>
+        </div>
+        <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          {[[tr("protein"), plan.protein, t.protein], [tr("carbsS"), plan.carbs, t.carbs], [tr("fat"), plan.fat, t.fat]].map(([l, v, c], i) => (
+            <div key={i} style={{ flex: 1, background: "rgba(255,255,255,0.12)", borderRadius: 10, padding: "8px 6px", textAlign: "center" }}>
+              <div style={{ fontSize: 11, color: "#fff", opacity: 0.8, fontWeight: 700 }}>{l}</div>
+              <div style={{ fontSize: 17, fontWeight: 800, color: "#fff" }}>{fmt(v)}<span style={{ fontSize: 11, opacity: 0.8 }}> {tr("g")}</span></div>
+            </div>
+          ))}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function ProfileSetupModal({ onClose }) {
+  const { state, actions } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const done = () => { actions.finishSetup(); onClose(); };
+  return (
+    <Modal title={tr("createProfile")} onClose={done}>
+      <div style={{ fontSize: 13, color: t.muted, marginBottom: 14, lineHeight: 1.5 }}>{tr("welcomeDesc")}</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 8 }}>
+        <Avatar name={state.profile.name} size={54} />
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 12, color: t.muted, fontWeight: 700, marginBottom: 4 }}>{tr("yourName")}</div>
+          <input autoFocus value={state.profile.name || ""} onChange={(e) => actions.setProfile({ name: e.target.value })} placeholder={tr("profileNamePh")}
+            style={{ ...inputStyle, width: "100%", textAlign: "left", fontSize: 16, fontWeight: 700 }} />
+        </div>
+      </div>
+      <ProfileFields compact />
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        <Button variant="ghost" onClick={done}>{tr("skip")}</Button>
+        <Button variant="primary" style={{ flex: 1 }} onClick={done}><Check size={17} /> {tr("getStarted")}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   ЕКРАН — ОЩЕ
+   ============================================================ */
+function MoreScreen({ go }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const items = [
+    { id: "profile", icon: User, label: tr("t_profile") },
+    { id: "calc", icon: Calculator, label: tr("t_calc") },
+    { id: "products", icon: Carrot, label: tr("t_products") },
+    { id: "micros", icon: Pill, label: tr("t_micros") },
+    { id: "weight", icon: Scale, label: tr("t_weight") },
+    { id: "shopping", icon: ShoppingCart, label: tr("t_shopping") },
+    { id: "prefs", icon: HeartPulse, label: tr("preferences") },
+    { id: "settings", icon: SettingsIcon, label: tr("t_settings") },
+  ];
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <SectionBar color={t.tealDark}>{tr("title_more")}</SectionBar>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        {items.map((it) => (
+          <button key={it.id} onClick={() => go(it.id)} style={{ border: `1px solid ${t.line}`, background: "#fff", borderRadius: 16, padding: "20px 12px", cursor: "pointer", fontFamily: FONT, display: "flex", flexDirection: "column", alignItems: "center", gap: 10, color: t.tealDark }}>
+            <it.icon size={26} />
+            <span style={{ fontSize: 13.5, fontWeight: 700, color: t.ink }}>{it.label}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   ОБЩИ СТИЛОВЕ ЗА ТАБЛИЦИ/ГРАФИКИ
+   ============================================================ */
+const navBtn = { background: "rgba(255,255,255,0.12)", border: "none", borderRadius: 9, width: 38, height: 38, display: "grid", placeItems: "center", cursor: "pointer", color: "#fff" };
+const thS = { padding: "9px 4px", fontSize: 11.5, fontWeight: 700, textAlign: "center" };
+const tdS = { padding: "9px 4px", fontSize: 13, textAlign: "center", color: t.ink, borderBottom: `1px solid ${t.line}` };
+const tooltipStyle = { borderRadius: 10, border: `1px solid ${t.line}`, fontSize: 12, fontFamily: FONT };
+
+function EmptyHint({ text }) {
+  return <div style={{ padding: "30px 10px", textAlign: "center", color: t.muted, fontSize: 13 }}>{text}</div>;
+}
+
+/* ============================================================
+   ДОЛНА НАВИГАЦИЯ
+   ============================================================ */
+const TABS = [
+  { id: "diary", key: "t_diary", Icon: NotebookPen },
+  { id: "recipes", key: "t_recipes", Icon: ChefHat },
+  { id: "week", key: "t_week", Icon: CalendarDays },
+  { id: "ai", key: "t_ai", Icon: MessageCircle },
+  { id: "more", key: "t_more", Icon: LayoutGrid },
+];
+const MORE_TABS = ["profile", "calc", "products", "micros", "weight", "shopping", "prefs", "settings"];
+
+function BottomNav({ tab, setTab }) {
+  const { state } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  return (
+    <nav style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: "#fff",
+      borderTop: `1px solid ${t.line}`, display: "flex", maxWidth: 480, margin: "0 auto",
+      paddingBottom: "env(safe-area-inset-bottom)", zIndex: 40, boxShadow: "0 -2px 12px rgba(14,85,89,0.05)" }}>
+      {TABS.map(({ id, key, Icon }) => {
+        const active = tab === id || (id === "more" && MORE_TABS.includes(tab));
+        return (
+          <button key={id} onClick={() => setTab(id)}
+            style={{ flex: 1, border: "none", background: "none", cursor: "pointer", padding: "8px 1px 9px",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 3, color: active ? t.coral : t.muted }}>
+            <Icon size={21} strokeWidth={active ? 2.4 : 1.9} />
+            <span style={{ fontSize: 10, fontWeight: active ? 700 : 500, textAlign: "center" }}>{tr(key)}</span>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
+/* ============================================================
+   ROOT
+   ============================================================ */
+function AppInner() {
+  const [tab, setTab] = useState("diary");
+  const { state, loaded } = useStore();
+  const L = state.lang; const tr = (k) => STR[L][k] ?? k;
+  const titleKey = ({ prefs: "preferences" }[tab]) || ("title_" + tab);
+  const title = tr(titleKey);
+  const name = state.profile?.name;
+  const [showSetup, setShowSetup] = useState(false);
+  useEffect(() => {
+    if (loaded && !state.profile?.name && !state.profileSetupDone) setShowSetup(true);
+  }, [loaded]);
+
+  return (
+    <div style={{ fontFamily: FONT, background: t.bgSoft, minHeight: "100vh", maxWidth: 480, margin: "0 auto", position: "relative" }}>
+      <style>{`
+        * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+        body { margin: 0; }
+        input[type=number]::-webkit-inner-spin-button, input[type=number]::-webkit-outer-spin-button { opacity: 1; }
+        ::-webkit-scrollbar { width: 0; height: 0; }
+        button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid ${t.coral}; outline-offset: 1px; }
+        @keyframes slideUp { from { transform: translateY(30px); opacity: .6 } to { transform: translateY(0); opacity: 1 } }
+        @keyframes spin { to { transform: rotate(360deg) } }
+        .spin { animation: spin 1s linear infinite; }
+        @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+      `}</style>
+
+      <header style={{ position: "sticky", top: 0, zIndex: 30, background: t.tealDark, color: "#fff",
+        padding: "16px 18px", boxShadow: "0 2px 8px rgba(14,85,89,0.12)" }}>
+        <div style={{ fontSize: 12, opacity: 0.8, fontWeight: 500 }}>{name ? `${tr("hello")}, ${name}` : tr("appKicker")}</div>
+        <div style={{ fontSize: 21, fontWeight: 800, marginTop: 2 }}>{title}</div>
+      </header>
+
+      <main style={{ padding: "16px 14px 96px" }}>
+        {!loaded ? <div style={{ padding: 60, textAlign: "center", color: t.muted }}>…</div> : (
+          <>
+            {tab === "diary" && <DiaryScreen />}
+            {tab === "recipes" && <RecipesScreen />}
+            {tab === "week" && <WeekScreen />}
+            {tab === "ai" && <AIChatScreen />}
+            {tab === "more" && <MoreScreen go={setTab} />}
+            {tab === "profile" && <ProfileScreen />}
+            {tab === "calc" && <CalculatorScreen />}
+            {tab === "products" && <ProductsScreen />}
+            {tab === "micros" && <MicrosScreen />}
+            {tab === "weight" && <WeightScreen />}
+            {tab === "shopping" && <ShoppingScreen />}
+            {tab === "prefs" && <PreferencesScreen />}
+            {tab === "settings" && <SettingsScreen />}
+          </>
+        )}
+      </main>
+
+      {showSetup && <ProfileSetupModal onClose={() => setShowSetup(false)} />}
+
+      <BottomNav tab={tab} setTab={setTab} />
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <StoreProvider>
+      <AppInner />
+    </StoreProvider>
+  );
+}
+
+
+createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
 </html>
