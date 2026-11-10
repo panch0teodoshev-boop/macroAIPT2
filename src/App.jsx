@@ -7,6 +7,7 @@ import Login from "./screens/Login.jsx";
 import Dashboard from "./screens/Dashboard.jsx";
 import Clients from "./screens/Clients.jsx";
 import Calculator from "./screens/Calculator.jsx";
+import Foods from "./screens/Foods.jsx";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard" },
@@ -71,7 +72,7 @@ function Shell() {
       {view === "calculator" && <Calculator />}
       {view === "admin" && <Placeholder title="Админ панел" text="Управление на нутриционисти, покани, логове — следващ етап." />}
       {view === "planner" && <Placeholder title="Седмичен хранителен дневник" text="7-дневен планер с 3-нивови суми — следващ етап." />}
-      {view === "foods" && <Placeholder title="Хранителна база и рецепти" text="Търсене, продукти, рецепти със снапшоти — следващ етап." />}
+      {view === "foods" && <Foods />}
       {view === "ai" && <Placeholder title="AI Nutrition Assistant" text="AI с контекст на клиент, върху детерминистичния калкулатор — следващ етап." />}
       {view === "settings" && <Placeholder title="Настройки" text="Профил, език, GDPR експорт/изтриване — следващ етап." />}
     </main>
