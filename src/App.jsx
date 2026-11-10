@@ -9,6 +9,7 @@ import Clients from "./screens/Clients.jsx";
 import Calculator from "./screens/Calculator.jsx";
 import Foods from "./screens/Foods.jsx";
 import Planner from "./screens/Planner.jsx";
+import AIAssistant from "./screens/AIAssistant.jsx";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard" },
@@ -74,7 +75,7 @@ function Shell() {
       {view === "admin" && <Placeholder title="Админ панел" text="Управление на нутриционисти, покани, логове — следващ етап." />}
       {view === "planner" && <Planner />}
       {view === "foods" && <Foods />}
-      {view === "ai" && <Placeholder title="AI Nutrition Assistant" text="AI с контекст на клиент, върху детерминистичния калкулатор — следващ етап." />}
+      {view === "ai" && <AIAssistant />}
       {view === "settings" && <Placeholder title="Настройки" text="Профил, език, GDPR експорт/изтриване — следващ етап." />}
     </main>
   );
