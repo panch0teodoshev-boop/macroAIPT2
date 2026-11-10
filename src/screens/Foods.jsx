@@ -137,7 +137,7 @@ function Recipes() {
   async function load() {
     setLoading(true);
     const [{ data: rs }, { data: fs }] = await Promise.all([
-      supabase.from("recipes").select("id, name, category, servings, recipe_ingredients(id, qty, unit, snapshot)").order("created_at", { ascending: false }),
+      supabase.from("recipes").select("id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot)").order("created_at", { ascending: false }),
       supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, satfat_g").eq("archived", false).order("name_bg").limit(2000),
     ]);
     setRecipes(rs || []); setFoods(fs || []); setLoading(false);
@@ -173,6 +173,10 @@ function Recipes() {
                   <Nut label="За порция" v={c.per} accent />
                   <Nut label="Общо" v={c.totals} />
                 </div>
+                {r.notes && <details style={{ marginTop: 10 }}>
+                  <summary style={{ cursor: "pointer", color: t.tealDark, fontWeight: 700, fontSize: 13 }}>Приготвяне</summary>
+                  <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, color: t.ink, marginTop: 6, lineHeight: 1.5 }}>{r.notes}</div>
+                </details>}
               </Card>
             );
           })}
@@ -197,6 +201,7 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
   const [name, setName] = useState("");
   const [category, setCategory] = useState("");
   const [servings, setServings] = useState(1);
+  const [notes, setNotes] = useState("");
   const [ings, setIngs] = useState([]); // {food, qty}
   const [q, setQ] = useState("");
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
@@ -208,7 +213,7 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
   const save = async () => {
     if (!name.trim() || ings.length === 0) { setErr("Име и поне една съставка са нужни."); return; }
     setBusy(true); setErr("");
-    const { data: rec, error: e1 } = await supabase.from("recipes").insert({ owner_id: ownerId, name: name.trim(), category: category.trim() || null, servings: Number(servings) || 1 }).select("id").single();
+    const { data: rec, error: e1 } = await supabase.from("recipes").insert({ owner_id: ownerId, name: name.trim(), category: category.trim() || null, servings: Number(servings) || 1, notes: notes.trim() || null }).select("id").single();
     if (e1) { setErr(e1.message); setBusy(false); return; }
     const payload = ings.map((it) => ({ recipe_id: rec.id, food_id: it.food.id, qty: Number(it.qty) || 0, unit: it.food.unit, snapshot: per100of(it.food) }));
     const { error: e2 } = await supabase.from("recipe_ingredients").insert(payload);
@@ -224,6 +229,7 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
         <Field label="Категория"><Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="напр. Обяд" /></Field>
         <Field label="Порции"><Input type="number" min={1} value={servings} onChange={(e) => setServings(e.target.value)} /></Field>
       </div>
+      <Field label="Приготвяне (стъпки)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder={"1) ...\n2) ..."} style={{ width: "100%", fontFamily: "inherit", fontSize: 14, color: t.ink, border: `1px solid ${t.line}`, borderRadius: 10, padding: "10px 12px", outline: "none", resize: "vertical" }} /></Field>
 
       <div style={{ fontWeight: 700, color: t.ink, margin: "6px 0" }}>Съставки</div>
       {ings.map((it, i) => (
