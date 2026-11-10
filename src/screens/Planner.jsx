@@ -46,6 +46,7 @@ export default function Planner() {
   const [foods, setFoods] = useState([]);
   const [recipes, setRecipes] = useState([]);
   const [showShop, setShowShop] = useState(false);
+  const [showMicro, setShowMicro] = useState(false);
 
   useEffect(() => {
     supabase.from("clients").select("id, first_name, last_name").eq("archived", false).order("first_name").then(({ data }) => setClients(data || []));
@@ -84,7 +85,7 @@ export default function Planner() {
   async function reload(versionId = version?.id) {
     if (!versionId) return;
     const { data } = await supabase.from("plan_days")
-      .select("id, weekday, plan_meals(id, name, position, plan_meal_items(id, qty, unit, snapshot, foods(name_bg), recipes(name)))")
+      .select("id, weekday, plan_meals(id, name, position, plan_meal_items(id, qty, unit, snapshot, foods(name_bg, micros), recipes(name)))")
       .eq("version_id", versionId).order("weekday");
     (data || []).forEach((d) => d.plan_meals.sort((a, b) => a.position - b.position));
     setTree(data || []);
@@ -139,6 +140,7 @@ export default function Planner() {
         <h2 style={{ margin: 0, color: t.ink }}>Седмичен режим</h2>
         <Select value={clientId} onChange={openClient} style={{ width: "auto", minWidth: 200 }} options={clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name || ""}` }))} />
         <div style={{ flex: 1 }} />
+        <Button variant="ghost" onClick={() => setShowMicro(true)}>Микронутриенти</Button>
         <Button variant="ghost" onClick={() => setShowShop(true)}>Списък за пазар</Button>
       </div>
 
@@ -225,6 +227,7 @@ export default function Planner() {
         setPicker(null); reload();
       }} />}
       {showShop && <ShoppingList tree={tree} onClose={() => setShowShop(false)} />}
+      {showMicro && <MicroAnalysis tree={tree} client={client} onClose={() => setShowMicro(false)} />}
     </div>
   );
 }
@@ -286,6 +289,73 @@ function ShoppingList({ tree, onClose }) {
         ))}</div>
       )}
       <div style={{ fontSize: 11.5, color: t.muted, marginTop: 10 }}>Събрано от всички дни. Рецептите не са разбити на съставки тук.</div>
+    </Modal>
+  );
+}
+
+// Референтни дневни стойности (възрастни; ориентир по EFSA/стандартни източници)
+const MICRO_REF = [
+  { key: "fiber_g", bg: "Фибри", unit: "г", rda: 25, type: "goal", fromMacro: true },
+  { key: "sodium_mg", bg: "Натрий", unit: "мг", rda: 2000, type: "limit" },
+  { key: "potassium_mg", bg: "Калий", unit: "мг", rda: 3500, type: "goal" },
+  { key: "calcium_mg", bg: "Калций", unit: "мг", rda: 1000, type: "goal" },
+  { key: "magnesium_mg", bg: "Магнезий", unit: "мг", rda: 350, type: "goal" },
+  { key: "iron_mg", bg: "Желязо", unit: "мг", rda: 11, type: "goal", femaleRda: 16 },
+  { key: "zinc_mg", bg: "Цинк", unit: "мг", rda: 10, type: "goal" },
+  { key: "phosphorus_mg", bg: "Фосфор", unit: "мг", rda: 700, type: "goal" },
+  { key: "vitA_ug", bg: "Витамин A", unit: "µg", rda: 750, type: "goal" },
+  { key: "vitC_mg", bg: "Витамин C", unit: "мг", rda: 90, type: "goal" },
+  { key: "vitD_ug", bg: "Витамин D", unit: "µg", rda: 15, type: "goal" },
+  { key: "vitE_mg", bg: "Витамин E", unit: "мг", rda: 13, type: "goal" },
+  { key: "vitK_ug", bg: "Витамин K", unit: "µg", rda: 70, type: "goal" },
+  { key: "vitB6_mg", bg: "Витамин B6", unit: "мг", rda: 1.4, type: "goal" },
+  { key: "vitB12_ug", bg: "Витамин B12", unit: "µg", rda: 2.5, type: "goal" },
+];
+
+function MicroAnalysis({ tree, client, onClose }) {
+  // събираме микро от хранителните продукти (не рецепти) за цялата седмица
+  const totals = {}; MICRO_REF.forEach((r) => (totals[r.key] = 0));
+  let foodItems = 0, withMicros = 0, recipeItems = 0;
+  tree.forEach((d) => (d.plan_meals || []).forEach((m) => (m.plan_meal_items || []).forEach((it) => {
+    if (it.unit === "serving") { recipeItems++; return; }
+    foodItems++;
+    const factor = it.unit === "piece" ? +it.qty : +it.qty / 100;
+    // фибри идват от snapshot (макро колона)
+    totals.fiber_g += (+(it.snapshot?.fiber_g) || 0) * factor;
+    const mic = it.foods?.micros || {};
+    const has = mic && Object.keys(mic).length > 0;
+    if (has) withMicros++;
+    for (const r of MICRO_REF) {
+      if (r.fromMacro) continue;
+      if (mic[r.key] != null) totals[r.key] += (+mic[r.key] || 0) * factor;
+    }
+  })));
+  const perDay = Object.fromEntries(Object.entries(totals).map(([k, v]) => [k, v / 7]));
+  const coverage = foodItems ? Math.round((withMicros / foodItems) * 100) : 0;
+  const sex = client?.sex;
+
+  return (
+    <Modal title="Микронутриенти — среден дневен прием" onClose={onClose}>
+      <div style={{ background: coverage < 70 ? t.coralLight : t.tealPale, color: coverage < 70 ? t.coralDark : t.tealDark, borderRadius: 10, padding: "10px 12px", fontSize: 12.5, marginBottom: 12 }}>
+        ⚠️ Данните са частични: само <b>{coverage}%</b> от продуктите в режима имат зададени микронутриенти ({withMicros}/{foodItems}). Липсващите НЕ се броят за нула — реалните стойности вероятно са по-високи. {recipeItems > 0 && `Рецептите (${recipeItems}) не се разбиват тук.`}
+      </div>
+      {MICRO_REF.map((r) => {
+        const rda = (sex === "female" && r.femaleRda) ? r.femaleRda : r.rda;
+        const v = perDay[r.key] || 0; const pct = rda ? (v / rda) * 100 : 0;
+        const over = r.type === "limit" && pct > 100;
+        const reached = r.type === "goal" && pct >= 100;
+        const col = over ? t.warn : reached ? t.good : t.teal;
+        return (
+          <div key={r.key} style={{ padding: "7px 0", borderBottom: `1px solid ${t.line}` }}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, marginBottom: 3 }}>
+              <span style={{ color: t.ink, fontWeight: 600 }}>{r.bg}</span>
+              <span style={{ color: t.muted }}>{round(v, 1)} / {rda} {r.unit} · <b style={{ color: col }}>{round(pct)}%</b></span>
+            </div>
+            <div style={{ height: 6, background: t.tealPale, borderRadius: 4, overflow: "hidden" }}><div style={{ width: `${Math.min(100, pct)}%`, height: "100%", background: col }} /></div>
+          </div>
+        );
+      })}
+      <div style={{ fontSize: 11, color: t.muted, marginTop: 10 }}>Референтните стойности са ориентир за възрастни (по EFSA/стандартни източници) и се различават според възраст, пол и състояние. Желязото е коригирано по пол.</div>
     </Modal>
   );
 }
