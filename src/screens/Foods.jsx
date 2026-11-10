@@ -137,7 +137,7 @@ function Recipes() {
   async function load() {
     setLoading(true);
     const [{ data: rs }, { data: fs }] = await Promise.all([
-      supabase.from("recipes").select("id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot)").order("created_at", { ascending: false }),
+      supabase.from("recipes").select("id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot, foods(name_bg))").order("created_at", { ascending: false }),
       supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, satfat_g").eq("archived", false).order("name_bg").limit(2000),
     ]);
     setRecipes(rs || []); setFoods(fs || []); setLoading(false);
@@ -160,6 +160,9 @@ function Recipes() {
         <div style={{ display: "grid", gap: 10 }}>
           {recipes.map((r) => {
             const c = calc(r);
+            const ingLine = (r.recipe_ingredients || [])
+              .map((ing) => `${ing.foods?.name_bg || ing.snapshot?.name || "?"} ${round(ing.qty)}${ing.unit === "piece" ? " бр" : " г"}`)
+              .join(" · ");
             return (
               <Card key={r.id} style={{ padding: 14 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
@@ -167,8 +170,12 @@ function Recipes() {
                     <div style={{ fontWeight: 700, color: t.ink, fontSize: 15 }}>{r.name}</div>
                     <div style={{ fontSize: 12, color: t.muted }}>{r.category || "—"} · {r.servings} порции · {(r.recipe_ingredients || []).length} съставки</div>
                   </div>
+                  {/* delete button follows */}
                   <button onClick={async () => { await supabase.from("recipes").delete().eq("id", r.id); load(); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer" }}>Изтрий</button>
                 </div>
+                {ingLine && <div style={{ fontSize: 13, color: t.ink, marginTop: 10, background: t.bg, border: `1px solid ${t.line}`, borderRadius: 10, padding: "8px 12px" }}>
+                  <span style={{ fontWeight: 700, color: t.muted }}>Съставки: </span>{ingLine}
+                </div>}
                 <div style={{ display: "flex", gap: 14, marginTop: 10, flexWrap: "wrap", fontSize: 13 }}>
                   <Nut label="За порция" v={c.per} accent />
                   <Nut label="Общо" v={c.totals} />
@@ -215,7 +222,7 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
     setBusy(true); setErr("");
     const { data: rec, error: e1 } = await supabase.from("recipes").insert({ owner_id: ownerId, name: name.trim(), category: category.trim() || null, servings: Number(servings) || 1, notes: notes.trim() || null }).select("id").single();
     if (e1) { setErr(e1.message); setBusy(false); return; }
-    const payload = ings.map((it) => ({ recipe_id: rec.id, food_id: it.food.id, qty: Number(it.qty) || 0, unit: it.food.unit, snapshot: per100of(it.food) }));
+    const payload = ings.map((it) => ({ recipe_id: rec.id, food_id: it.food.id, qty: Number(it.qty) || 0, unit: it.food.unit, snapshot: { ...per100of(it.food), name: it.food.name_bg } }));
     const { error: e2 } = await supabase.from("recipe_ingredients").insert(payload);
     setBusy(false);
     if (e2) { setErr(e2.message); return; }
