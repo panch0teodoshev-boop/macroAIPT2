@@ -10,6 +10,7 @@ import Calculator from "./screens/Calculator.jsx";
 import Foods from "./screens/Foods.jsx";
 import Planner from "./screens/Planner.jsx";
 import AIAssistant from "./screens/AIAssistant.jsx";
+import Admin from "./screens/Admin.jsx";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard" },
@@ -72,7 +73,7 @@ function Shell() {
       {view === "dashboard" && <Dashboard profile={profile} go={goto} />}
       {view === "clients" && <Clients onOpen={() => goto("calculator")} />}
       {view === "calculator" && <Calculator />}
-      {view === "admin" && <Placeholder title="Админ панел" text="Управление на нутриционисти, покани, логове — следващ етап." />}
+      {view === "admin" && <Admin />}
       {view === "planner" && <Planner />}
       {view === "foods" && <Foods />}
       {view === "ai" && <AIAssistant />}
