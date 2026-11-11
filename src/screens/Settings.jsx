@@ -46,6 +46,8 @@ export default function Settings() {
         </div>
       </Card>
 
+      <PasswordChange />
+
       <GdprTools />
 
       <Card style={{ background: t.tealPale, border: "none", fontSize: 12.5, color: t.tealDark, lineHeight: 1.6 }}>
@@ -54,6 +56,38 @@ export default function Settings() {
         Експортът съдържа всички данни за избрания клиент; изтриването е необратимо и премахва мерки, режими и AI разговори, свързани с него.
       </Card>
     </div>
+  );
+}
+
+function PasswordChange() {
+  const [pw, setPw] = useState("");
+  const [pw2, setPw2] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState(null);
+
+  async function save() {
+    setMsg(null);
+    if (pw.length < 8) { setMsg({ ok: false, text: "Паролата трябва да е поне 8 символа." }); return; }
+    if (pw !== pw2) { setMsg({ ok: false, text: "Паролите не съвпадат." }); return; }
+    setBusy(true);
+    const { error } = await supabase.auth.updateUser({ password: pw });
+    setBusy(false);
+    if (error) { setMsg({ ok: false, text: error.message }); return; }
+    setPw(""); setPw2("");
+    setMsg({ ok: true, text: "Паролата е сменена успешно." });
+  }
+
+  return (
+    <Card>
+      <div style={{ fontWeight: 700, color: t.ink, marginBottom: 4 }}>Смяна на парола</div>
+      <div style={{ color: t.muted, fontSize: 13, marginBottom: 12 }}>Въведи нова парола за акаунта си (минимум 8 символа).</div>
+      <div style={{ display: "grid", gap: 10, maxWidth: 380 }}>
+        <Field label="Нова парола"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" /></Field>
+        <Field label="Повтори новата парола"><Input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" /></Field>
+        {msg && <div style={{ fontSize: 13, fontWeight: 600, color: msg.ok ? t.good : t.warn }}>{msg.text}</div>}
+        <div><Button onClick={save} style={{ opacity: busy ? 0.6 : 1 }}>{busy ? "Запис…" : "Смени паролата"}</Button></div>
+      </div>
+    </Card>
   );
 }
 
