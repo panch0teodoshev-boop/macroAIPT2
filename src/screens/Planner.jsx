@@ -7,6 +7,7 @@ import { useViewport } from "../ui/useViewport.js";
 import { calcBMR, calcTDEE, calcEnergyTarget, calcMacros, round } from "../lib/nutrition.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 
+const AI_ENDPOINT = import.meta.env.VITE_AI_PROXY_URL || "";
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 const DAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
 const DEFAULT_MEALS = ["Закуска", "Обяд", "Вечеря", "Междинно"];
@@ -51,6 +52,7 @@ export default function Planner() {
   const [recipes, setRecipes] = useState([]);
   const [showShop, setShowShop] = useState(false);
   const [showMicro, setShowMicro] = useState(false);
+  const [showAI, setShowAI] = useState(false);
 
   useEffect(() => {
     supabase.from("clients").select("id, first_name, last_name").eq("archived", false).order("first_name").then(({ data }) => setClients(data || []));
@@ -206,6 +208,42 @@ export default function Planner() {
     reload(); alert("Копирано в " + DAYS[targetWeekday]);
   }
 
+  // Прилага AI-генерирана чернова към текущата версия. Връща {added, unmatched}.
+  async function applyAIPlan(genDays, { replace, singleDayWeekday }) {
+    if (!version) return { added: 0, unmatched: [] };
+    const norm = (s) => (s || "").toString().toLowerCase().trim();
+    const byName = new Map();
+    foods.forEach((f) => { if (f.unit === "100g") { byName.set(norm(f.name_bg), f); if (f.name_en) byName.set(norm(f.name_en), f); } });
+    let added = 0; const unmatched = new Set();
+    const { data: dayRows } = await supabase.from("plan_days").select("id, weekday").eq("version_id", version.id);
+    const dayByWd = {}; (dayRows || []).forEach((d) => (dayByWd[d.weekday] = d.id));
+    for (const gd of genDays || []) {
+      const wd = singleDayWeekday != null ? singleDayWeekday : gd.weekday;
+      const dayId = dayByWd[wd]; if (dayId == null) continue;
+      if (replace) {
+        const { data: oldMeals } = await supabase.from("plan_meals").select("id").eq("day_id", dayId);
+        if (oldMeals?.length) await supabase.from("plan_meals").delete().in("id", oldMeals.map((x) => x.id));
+      }
+      let pos = 0;
+      if (!replace) { const { data: ex } = await supabase.from("plan_meals").select("position").eq("day_id", dayId); pos = (ex || []).reduce((a, b) => Math.max(a, b.position + 1), 0); }
+      for (const meal of gd.meals || []) {
+        const { data: nm } = await supabase.from("plan_meals").insert({ day_id: dayId, name: (meal.name || "Хранене").toString().slice(0, 60), position: pos++ }).select("id").single();
+        const items = [];
+        for (const it of meal.items || []) {
+          const f = byName.get(norm(it.food));
+          if (!f) { unmatched.add(it.food); continue; }
+          const grams = Math.max(0, Math.round(+it.grams || 0));
+          if (!grams) continue;
+          items.push({ meal_id: nm.id, food_id: f.id, qty: grams, unit: "100g", snapshot: { kcal: f.kcal, protein_g: f.protein_g, carbs_g: f.carbs_g, fat_g: f.fat_g, fiber_g: f.fiber_g, name: f.name_bg } });
+          added++;
+        }
+        if (items.length) await supabase.from("plan_meal_items").insert(items);
+      }
+    }
+    await reload();
+    return { added, unmatched: [...unmatched] };
+  }
+
   if (!clientId) return (
     <div style={{ display: "grid", gap: 14 }}>
       <h2 style={{ margin: 0, color: t.ink }}>Седмичен дневник</h2>
@@ -224,6 +262,7 @@ export default function Planner() {
         <h2 style={{ margin: 0, color: t.ink }}>Седмичен режим</h2>
         <Select value={clientId} onChange={openClient} style={{ width: "auto", minWidth: 200 }} options={clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name || ""}` }))} />
         <div style={{ flex: 1 }} />
+        {!locked && <Button onClick={() => setShowAI(true)}>✨ AI чернова</Button>}
         <Button variant="ghost" onClick={() => setShowMicro(true)}>Микронутриенти</Button>
         <Button variant="ghost" onClick={() => setShowShop(true)}>Списък за пазар</Button>
         <Button variant="ghost" onClick={() => exportPlanPDF({ tree, client, target, nutritionist: profileName })}>PDF</Button>
@@ -341,6 +380,7 @@ export default function Planner() {
       }} />}
       {showShop && <ShoppingList tree={tree} onClose={() => setShowShop(false)} />}
       {showMicro && <MicroAnalysis tree={tree} client={client} onClose={() => setShowMicro(false)} />}
+      {showAI && <AIGenerate foods={foods} client={client} target={target} dayIdx={dayIdx} onApply={applyAIPlan} onClose={() => setShowAI(false)} />}
     </div>
   );
 }
@@ -469,6 +509,119 @@ function MicroAnalysis({ tree, client, onClose }) {
         );
       })}
       <div style={{ fontSize: 11, color: t.muted, marginTop: 10 }}>Референтните стойности са ориентир за възрастни (по EFSA/стандартни източници) и се различават според възраст, пол и състояние. Желязото е коригирано по пол.</div>
+    </Modal>
+  );
+}
+
+function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
+  const [scope, setScope] = useState("week");
+  const [extra, setExtra] = useState("");
+  const [replace, setReplace] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const [result, setResult] = useState(null);
+
+  const foodList = foods.filter((f) => f.unit === "100g")
+    .map((f) => `${f.name_bg}: ${round(f.kcal)}k ${round(f.protein_g)}P ${round(f.carbs_g)}C ${round(f.fat_g)}F`).join("\n");
+
+  function extractJson(txt) {
+    let s = txt.replace(/```json/gi, "").replace(/```/g, "").trim();
+    const a = s.indexOf("{"), b = s.lastIndexOf("}");
+    if (a === -1 || b === -1) throw new Error("AI не върна валиден JSON.");
+    return JSON.parse(s.slice(a, b + 1));
+  }
+
+  async function generate() {
+    if (!AI_ENDPOINT) { setErr("AI не е конфигуриран (липсва прокси адрес)."); return; }
+    setBusy(true); setErr(""); setResult(null);
+    const single = scope === "day";
+    const sys = [
+      "Ти си професионален асистент за нутриционист. Съставяш ЧЕРНОВА на хранителен режим, която нутриционистът после коригира ръчно.",
+      "ПРАВИЛА (стриктно):",
+      "- Използвай САМО храни от предоставения списък, изписани с ТОЧНОТО им име на български (копирай името дословно).",
+      "- Всички количества са в ГРАМОВЕ (цели числа).",
+      "- Съобрази дневните цели (калории и макроси) възможно най-близо за всеки ден.",
+      "- Спазвай алергии, диета и изключени храни — НИКОГА не предлагай храна в конфликт с тях.",
+      "- Връщай САМО валиден JSON по схемата по-долу. Без обяснения, без код-блокове, без текст преди/след.",
+      'Схема: {"days":[{"weekday":0,"meals":[{"name":"Закуска","items":[{"food":"<точно име от списъка>","grams":60}]}]}]}',
+      "weekday: 0=Понеделник, 1=Вторник, 2=Сряда, 3=Четвъртък, 4=Петък, 5=Събота, 6=Неделя.",
+    ].join("\n");
+
+    const c = client || {};
+    const cons = [];
+    if (target) cons.push(`Дневни цели: ~${round(target.kcal)} kcal, протеин ${round(target.protein_g)} g, въглехидрати ${round(target.carbs_g)} g, мазнини ${round(target.fat_g)} g.`);
+    if (c.main_goal) cons.push(`Цел на клиента: ${c.main_goal}.`);
+    if (c.diet) cons.push(`Диета/режим: ${c.diet}.`);
+    if (c.allergies) cons.push(`Алергии/непоносимости (НЕ нарушавай): ${c.allergies}.`);
+    if (c.excluded_foods) cons.push(`Изключени храни: ${c.excluded_foods}.`);
+    if (extra.trim()) cons.push(`Допълнителни указания от нутриционста: ${extra.trim()}.`);
+
+    const task = single
+      ? `Състави режим само за ${DAYS[dayIdx]} (weekday ${dayIdx}) — 3-5 хранения.`
+      : "Състави режим за всичките 7 дни (weekday 0..6), по 3-5 хранения на ден, с разнообразие между дните.";
+
+    const userMsg = [
+      task, "", cons.join("\n"), "",
+      "НАЛИЧНИ ХРАНИ (име: калории/протеин/въглехидрати/мазнини на 100 g) — използвай само тези имена:",
+      foodList,
+    ].join("\n");
+
+    try {
+      const res = await fetch(AI_ENDPOINT, {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: single ? 1500 : 4000, system: sys, messages: [{ role: "user", content: userMsg }] }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data?.error?.message || ("HTTP " + res.status));
+      const reply = (data.content || []).map((b) => b.text || "").join("").trim();
+      const parsed = extractJson(reply);
+      const r = await onApply(parsed.days || [], { replace, singleDayWeekday: single ? dayIdx : null });
+      setResult(r);
+    } catch (e) {
+      setErr("Грешка: " + e.message);
+    } finally { setBusy(false); }
+  }
+
+  return (
+    <Modal title="✨ AI чернова на режим" onClose={onClose}>
+      {!result ? (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ fontSize: 12.5, color: t.muted, background: t.tealPale, borderRadius: 10, padding: "9px 12px", lineHeight: 1.5 }}>
+            AI ще състави <b>чернова</b> само от храни в твоята база и ще съобрази целите и ограниченията на клиента. Ти проверяваш и коригираш след това — нищо не е финално.
+          </div>
+          <Field label="Обхват">
+            <Select value={scope} onChange={setScope} options={[{ value: "week", label: "Цяла седмица (7 дни)" }, { value: "day", label: `Само ${DAYS[dayIdx]}` }]} />
+          </Field>
+          <Field label="Допълнителни указания (по избор)">
+            <Input value={extra} onChange={(e) => setExtra(e.target.value)} placeholder="напр. без свинско, 4 хранения, повече риба…" />
+          </Field>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: t.ink, cursor: "pointer" }}>
+            <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} style={{ width: 17, height: 17, accentColor: t.coral }} />
+            Замести съществуващото съдържание в избраните дни
+          </label>
+          {!client && <div style={{ fontSize: 12.5, color: t.warn }}>Няма зареден клиент — черновата ще е без цели/ограничения.</div>}
+          {err && <div style={{ color: t.warn, fontSize: 13 }}>{err}</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+            <Button variant="ghost" onClick={onClose} disabled={busy}>Отказ</Button>
+            <Button onClick={generate} style={{ opacity: busy ? 0.6 : 1 }}>{busy ? "Генерирам…" : "Генерирай"}</Button>
+          </div>
+          {busy && <div style={{ fontSize: 12.5, color: t.muted }}>AI съставя режима и го добавя към плана… това може да отнеме 10-30 сек.</div>}
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ fontSize: 14, color: t.ink, background: t.tealPale, borderRadius: 10, padding: "10px 12px" }}>
+            ✅ Добавени <b>{result.added}</b> продукта към режима. Прегледай и коригирай дните.
+          </div>
+          {result.unmatched?.length > 0 && (
+            <div style={{ fontSize: 12.5, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "9px 12px" }}>
+              ⚠️ {result.unmatched.length} предложени храни не бяха намерени в базата и са пропуснати: {result.unmatched.slice(0, 15).join(", ")}{result.unmatched.length > 15 ? "…" : ""}
+            </div>
+          )}
+          <div style={{ display: "flex", justifyContent: "flex-end" }}>
+            <Button onClick={onClose}>Готово</Button>
+          </div>
+        </div>
+      )}
     </Modal>
   );
 }
