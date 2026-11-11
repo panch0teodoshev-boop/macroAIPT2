@@ -4,6 +4,7 @@ import { t, FONT } from "./ui/theme.js";
 import { Button, Card } from "./ui/primitives.jsx";
 import { useViewport } from "./ui/useViewport.js";
 import Login from "./screens/Login.jsx";
+import ResetPassword from "./screens/ResetPassword.jsx";
 import Dashboard from "./screens/Dashboard.jsx";
 import Clients from "./screens/Clients.jsx";
 import Calculator from "./screens/Calculator.jsx";
@@ -24,12 +25,13 @@ const NAV = [
 ];
 
 function Shell() {
-  const { profile, loading, session, signOut } = useAuth();
+  const { profile, loading, session, signOut, recovery } = useAuth();
   const { isDesktop } = useViewport();
   const [view, setView] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
 
   if (loading) return <Center>Зареждане…</Center>;
+  if (recovery) return <ResetPassword />;
   if (!session) return <Login />;
   if (!profile) return <Center>
     <Card style={{ maxWidth: 420, textAlign: "center" }}>
