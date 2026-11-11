@@ -5,6 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { calcBMR, calcTDEE, calcEnergyTarget, calcMacros, round } from "../lib/nutrition.mjs";
+import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 const DAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
@@ -33,7 +34,8 @@ function clientTarget(c) {
 }
 
 export default function Planner() {
-  const { session } = useAuth();
+  const { session, profile } = useAuth();
+  const profileName = profile?.full_name || profile?.email || "";
   const { isMobile } = useViewport();
   const [clients, setClients] = useState([]);
   const [clientId, setClientId] = useState("");
@@ -142,6 +144,8 @@ export default function Planner() {
         <div style={{ flex: 1 }} />
         <Button variant="ghost" onClick={() => setShowMicro(true)}>Микронутриенти</Button>
         <Button variant="ghost" onClick={() => setShowShop(true)}>Списък за пазар</Button>
+        <Button variant="ghost" onClick={() => exportPlanPDF({ tree, client, target, nutritionist: profileName })}>PDF</Button>
+        <Button variant="ghost" onClick={() => exportPlanExcel({ tree, client })}>Excel</Button>
       </div>
 
       {loading ? <Card>Зареждане…</Card> : (
