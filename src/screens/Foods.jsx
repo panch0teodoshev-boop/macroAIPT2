@@ -137,7 +137,7 @@ function Recipes() {
   async function load() {
     setLoading(true);
     const [{ data: rs }, { data: fs }] = await Promise.all([
-      supabase.from("recipes").select("id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot, foods(name_bg))").order("created_at", { ascending: false }),
+      supabase.from("recipes").select("id, owner_id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot, foods(name_bg))").order("created_at", { ascending: false }),
       supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, satfat_g").eq("archived", false).order("name_bg").limit(2000),
     ]);
     setRecipes(rs || []); setFoods(fs || []); setLoading(false);
@@ -160,18 +160,20 @@ function Recipes() {
         <div style={{ display: "grid", gap: 10 }}>
           {recipes.map((r) => {
             const c = calc(r);
+            const mine = r.owner_id === session.user.id;
             const ingLine = (r.recipe_ingredients || [])
               .map((ing) => `${ing.foods?.name_bg || ing.snapshot?.name || "?"} ${round(ing.qty)}${ing.unit === "piece" ? " бр" : " г"}`)
               .join(" · ");
             return (
               <Card key={r.id} style={{ padding: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
                   <div>
-                    <div style={{ fontWeight: 700, color: t.ink, fontSize: 15 }}>{r.name}</div>
+                    <div style={{ fontWeight: 700, color: t.ink, fontSize: 15 }}>
+                      {r.name} {!mine && <span style={{ background: t.tealPale, color: t.tealDark, borderRadius: 20, padding: "2px 9px", fontSize: 10.5, fontWeight: 700, verticalAlign: "middle" }}>Библиотека</span>}
+                    </div>
                     <div style={{ fontSize: 12, color: t.muted }}>{r.category || "—"} · {r.servings} порции · {(r.recipe_ingredients || []).length} съставки</div>
                   </div>
-                  {/* delete button follows */}
-                  <button onClick={async () => { await supabase.from("recipes").delete().eq("id", r.id); load(); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer" }}>Изтрий</button>
+                  {mine && <button onClick={async () => { await supabase.from("recipes").delete().eq("id", r.id); load(); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer" }}>Изтрий</button>}
                 </div>
                 {ingLine && <div style={{ fontSize: 13, color: t.ink, marginTop: 10, background: t.bg, border: `1px solid ${t.line}`, borderRadius: 10, padding: "8px 12px" }}>
                   <span style={{ fontWeight: 700, color: t.muted }}>Съставки: </span>{ingLine}
