@@ -42,8 +42,8 @@ export function Select({ value, onChange, options, style }) {
   );
 }
 
-export function Card({ children, style }) {
-  return <div style={{ background: "#fff", border: `1px solid ${t.line}`, borderRadius: 16, padding: 18, ...style }}>{children}</div>;
+export function Card({ children, style, ...rest }) {
+  return <div {...rest} style={{ background: "#fff", border: `1px solid ${t.line}`, borderRadius: 16, padding: 18, ...style }}>{children}</div>;
 }
 
 export function Stat({ label, value, unit, accent }) {
