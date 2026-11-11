@@ -40,6 +40,8 @@ export default function Planner() {
   const [clients, setClients] = useState([]);
   const [clientId, setClientId] = useState("");
   const [client, setClient] = useState(null);
+  const [plan, setPlan] = useState(null);
+  const [versions, setVersions] = useState([]);
   const [version, setVersion] = useState(null);
   const [tree, setTree] = useState([]); // [{id, weekday, plan_meals:[{id,name,position,plan_meal_items:[...]}]}]
   const [dayIdx, setDayIdx] = useState(0);
@@ -58,18 +60,96 @@ export default function Planner() {
 
   async function openClient(id) {
     setClientId(id); setDayIdx(0);
-    if (!id) { setClient(null); setVersion(null); setTree([]); return; }
+    if (!id) { setClient(null); setPlan(null); setVersions([]); setVersion(null); setTree([]); return; }
     setLoading(true);
     const { data: c } = await supabase.from("clients").select("*").eq("id", id).single();
     setClient(c);
     // plan
-    let { data: plan } = await supabase.from("plans").select("id").eq("client_id", id).limit(1).maybeSingle();
-    if (!plan) ({ data: plan } = await supabase.from("plans").insert({ client_id: id, nutritionist_id: session.user.id, title: "Седмичен режим" }).select("id").single());
-    let { data: ver } = await supabase.from("plan_versions").select("id, version, status").eq("plan_id", plan.id).order("version", { ascending: false }).limit(1).maybeSingle();
-    if (!ver) ({ data: ver } = await supabase.from("plan_versions").insert({ plan_id: plan.id, version: 1, status: "draft", targets: {} }).select("id, version, status").single());
+    let { data: pl } = await supabase.from("plans").select("id, title").eq("client_id", id).limit(1).maybeSingle();
+    if (!pl) ({ data: pl } = await supabase.from("plans").insert({ client_id: id, nutritionist_id: session.user.id, title: "Седмичен режим" }).select("id, title").single());
+    setPlan(pl);
+    let { data: vers } = await supabase.from("plan_versions").select("id, version, status, created_at").eq("plan_id", pl.id).order("version", { ascending: false });
+    if (!vers || vers.length === 0) {
+      const { data: v1 } = await supabase.from("plan_versions").insert({ plan_id: pl.id, version: 1, status: "draft", targets: {} }).select("id, version, status, created_at").single();
+      vers = [v1];
+    }
+    setVersions(vers);
+    const ver = vers.find((v) => v.status !== "archived") || vers[0];
     setVersion(ver);
     await ensureDays(ver.id);
     await reload(ver.id);
+    setLoading(false);
+  }
+
+  async function selectVersion(versionId) {
+    const ver = versions.find((v) => v.id === versionId);
+    if (!ver) return;
+    setDayIdx(0); setVersion(ver); setLoading(true);
+    await ensureDays(ver.id);
+    await reload(ver.id);
+    setLoading(false);
+  }
+
+  async function refreshVersions(pickId) {
+    if (!plan) return;
+    const { data: vers } = await supabase.from("plan_versions").select("id, version, status, created_at").eq("plan_id", plan.id).order("version", { ascending: false });
+    setVersions(vers || []);
+    if (pickId) { const v = (vers || []).find((x) => x.id === pickId); if (v) setVersion(v); }
+    else { const cur = (vers || []).find((x) => x.id === version?.id); if (cur) setVersion(cur); }
+  }
+
+  // Дълбоко копира съдържанието (дни→хранения→айтеми) от source версия в target.
+  async function copyVersionContent(srcVersionId, dstVersionId) {
+    const { data: srcDays } = await supabase.from("plan_days")
+      .select("weekday, plan_meals(name, position, plan_meal_items(food_id, recipe_id, qty, unit, snapshot))")
+      .eq("version_id", srcVersionId);
+    for (const d of srcDays || []) {
+      const { data: nd } = await supabase.from("plan_days").insert({ version_id: dstVersionId, weekday: d.weekday }).select("id").single();
+      for (const m of (d.plan_meals || []).sort((a, b) => a.position - b.position)) {
+        const { data: nm } = await supabase.from("plan_meals").insert({ day_id: nd.id, name: m.name, position: m.position }).select("id").single();
+        const items = (m.plan_meal_items || []).map((it) => ({ meal_id: nm.id, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot }));
+        if (items.length) await supabase.from("plan_meal_items").insert(items);
+      }
+    }
+  }
+
+  async function newVersion(mode) {
+    if (!plan) return;
+    setLoading(true);
+    const nextNum = (versions[0]?.version || 0) + 1;
+    const { data: nv, error } = await supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: {} }).select("id, version, status, created_at").single();
+    if (error) { setLoading(false); alert("Грешка: " + error.message); return; }
+    if (mode === "duplicate" && version) {
+      await copyVersionContent(version.id, nv.id);
+    } else {
+      await ensureDays(nv.id);
+    }
+    await refreshVersions(nv.id);
+    setDayIdx(0);
+    await reload(nv.id);
+    setLoading(false);
+  }
+
+  async function setVersionStatus(status) {
+    if (!version) return;
+    // максимум една „финална" версия: архивираме евентуална друга финална
+    if (status === "final") {
+      const otherFinal = versions.filter((v) => v.id !== version.id && v.status === "final");
+      for (const v of otherFinal) await supabase.from("plan_versions").update({ status: "archived" }).eq("id", v.id);
+    }
+    await supabase.from("plan_versions").update({ status }).eq("id", version.id);
+    await refreshVersions(version.id);
+  }
+
+  async function deleteVersion() {
+    if (!version || versions.length <= 1) { alert("Трябва да остане поне една версия."); return; }
+    if (!confirm(`Да изтрия версия ${version.version}? Съдържанието ѝ ще се премахне.`)) return;
+    setLoading(true);
+    await supabase.from("plan_versions").delete().eq("id", version.id);
+    const rest = versions.filter((v) => v.id !== version.id);
+    const next = rest.find((v) => v.status !== "archived") || rest[0];
+    setVersions(rest); setVersion(next); setDayIdx(0);
+    await ensureDays(next.id); await reload(next.id);
     setLoading(false);
   }
 
@@ -87,7 +167,7 @@ export default function Planner() {
   async function reload(versionId = version?.id) {
     if (!versionId) return;
     const { data } = await supabase.from("plan_days")
-      .select("id, weekday, plan_meals(id, name, position, plan_meal_items(id, qty, unit, snapshot, foods(name_bg, micros), recipes(name)))")
+      .select("id, weekday, plan_meals(id, name, position, plan_meal_items(id, qty, unit, snapshot, food_id, recipe_id, foods(name_bg, micros), recipes(name)))")
       .eq("version_id", versionId).order("weekday");
     (data || []).forEach((d) => d.plan_meals.sort((a, b) => a.position - b.position));
     setTree(data || []);
@@ -95,6 +175,7 @@ export default function Planner() {
 
   const day = tree.find((d) => d.weekday === dayIdx);
   const target = useMemo(() => clientTarget(client), [client]);
+  const locked = version?.status === "final";
 
   const dayTotals = (d) => { const tot = zero(); (d?.plan_meals || []).forEach((m) => (m.plan_meal_items || []).forEach((it) => addInto(tot, itemTotals(it)))); return tot; };
   const mealTotals = (m) => { const tot = zero(); (m.plan_meal_items || []).forEach((it) => addInto(tot, itemTotals(it))); return tot; };
@@ -102,16 +183,17 @@ export default function Planner() {
   const weekAvg = Object.fromEntries(MK.map((k) => [k, weekTotals[k] / 7]));
 
   async function addMeal() {
-    if (!day) return;
+    if (!day || locked) return;
     const name = prompt("Име на храненето:", "Ново хранене"); if (!name) return;
     await supabase.from("plan_meals").insert({ day_id: day.id, name, position: (day.plan_meals?.length || 0) });
     reload();
   }
-  async function renameMeal(m) { const name = prompt("Преименувай:", m.name); if (name) { await supabase.from("plan_meals").update({ name }).eq("id", m.id); reload(); } }
-  async function delMeal(m) { await supabase.from("plan_meals").delete().eq("id", m.id); reload(); }
-  async function delItem(id) { await supabase.from("plan_meal_items").delete().eq("id", id); reload(); }
-  async function setQty(id, qty) { await supabase.from("plan_meal_items").update({ qty }).eq("id", id); reload(); }
+  async function renameMeal(m) { if (locked) return; const name = prompt("Преименувай:", m.name); if (name) { await supabase.from("plan_meals").update({ name }).eq("id", m.id); reload(); } }
+  async function delMeal(m) { if (locked) return; await supabase.from("plan_meals").delete().eq("id", m.id); reload(); }
+  async function delItem(id) { if (locked) return; await supabase.from("plan_meal_items").delete().eq("id", id); reload(); }
+  async function setQty(id, qty) { if (locked) return; await supabase.from("plan_meal_items").update({ qty }).eq("id", id); reload(); }
   async function copyDayTo(targetWeekday) {
+    if (locked) return;
     const src = day; if (!src) return;
     const { data: td } = await supabase.from("plan_days").select("id").eq("version_id", version.id).eq("weekday", targetWeekday).single();
     // изчистваме целевия ден
@@ -119,7 +201,7 @@ export default function Planner() {
     if (tmeals?.length) await supabase.from("plan_meals").delete().in("id", tmeals.map((x) => x.id));
     for (const m of src.plan_meals) {
       const { data: nm } = await supabase.from("plan_meals").insert({ day_id: td.id, name: m.name, position: m.position }).select("id").single();
-      if (m.plan_meal_items?.length) await supabase.from("plan_meal_items").insert(m.plan_meal_items.map((it) => ({ meal_id: nm.id, food_id: it.foods ? undefined : undefined, qty: it.qty, unit: it.unit, snapshot: it.snapshot })));
+      if (m.plan_meal_items?.length) await supabase.from("plan_meal_items").insert(m.plan_meal_items.map((it) => ({ meal_id: nm.id, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot })));
     }
     reload(); alert("Копирано в " + DAYS[targetWeekday]);
   }
@@ -147,6 +229,31 @@ export default function Planner() {
         <Button variant="ghost" onClick={() => exportPlanPDF({ tree, client, target, nutritionist: profileName })}>PDF</Button>
         <Button variant="ghost" onClick={() => exportPlanExcel({ tree, client })}>Excel</Button>
       </div>
+
+      {/* Лента за версии */}
+      {version && (
+        <Card style={{ padding: "10px 14px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12.5, fontWeight: 700, color: t.muted }}>Версия</span>
+          <Select value={version.id} onChange={selectVersion} style={{ width: "auto", minWidth: 150 }}
+            options={versions.map((v) => ({ value: v.id, label: `v${v.version}${v.status === "final" ? " · финал" : v.status === "archived" ? " · архив" : " · чернова"}` }))} />
+          <StatusBadge status={version.status} />
+          <div style={{ flex: 1 }} />
+          {!locked ? (
+            <Button variant="ghost" onClick={() => setVersionStatus("final")} title="Заключва версията за редакция">✓ Финализирай</Button>
+          ) : (
+            <Button variant="ghost" onClick={() => setVersionStatus("draft")} title="Отключва за редакция">↩ Върни в чернова</Button>
+          )}
+          <Select value="" onChange={(m) => m && newVersion(m)} style={{ width: "auto" }}
+            options={[{ value: "", label: "+ Нова версия…" }, { value: "duplicate", label: "Дублирай текущата" }, { value: "blank", label: "Празна (7 дни)" }]} />
+          {versions.length > 1 && <Button variant="danger" onClick={deleteVersion} style={{ padding: "8px 12px" }}>Изтрий версия</Button>}
+        </Card>
+      )}
+
+      {locked && (
+        <Card style={{ background: t.tealPale, border: "none", color: t.tealDark, fontSize: 12.5, padding: "9px 14px" }}>
+          🔒 Версия {version.version} е <b>финализирана</b> и е заключена за редакция. За промени: „Върни в чернова" или направи „Нова версия → Дублирай текущата".
+        </Card>
+      )}
 
       {loading ? <Card>Зареждане…</Card> : (
         <>
@@ -180,10 +287,10 @@ export default function Planner() {
           {/* meals of the day */}
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div style={{ fontWeight: 800, color: t.ink, fontSize: 16 }}>{DAYS[dayIdx]}</div>
-            <div style={{ display: "flex", gap: 8 }}>
+            {!locked && <div style={{ display: "flex", gap: 8 }}>
               <Select value="" onChange={(w) => w !== "" && copyDayTo(Number(w))} style={{ width: "auto" }} options={[{ value: "", label: "Копирай деня в…" }, ...DAYS.map((d, i) => ({ value: String(i), label: d })).filter((_, i) => i !== dayIdx)]} />
               <Button onClick={addMeal}>+ Хранене</Button>
-            </div>
+            </div>}
           </div>
 
           {(day?.plan_meals || []).map((m) => {
@@ -193,8 +300,10 @@ export default function Planner() {
                 <div style={{ display: "flex", alignItems: "center", gap: 8, background: t.tealDark, color: "#fff", padding: "9px 14px" }}>
                   <span style={{ fontWeight: 700, flex: 1 }}>{m.name}</span>
                   <span style={{ fontSize: 12.5 }}>{round(mt.kcal)} kcal · П {round(mt.protein_g)} · В {round(mt.carbs_g)} · М {round(mt.fat_g)}</span>
-                  <button onClick={() => renameMeal(m)} title="Преименувай" style={iconBtn}>✎</button>
-                  <button onClick={() => delMeal(m)} title="Изтрий хранене" style={iconBtn}>🗑</button>
+                  {!locked && <>
+                    <button onClick={() => renameMeal(m)} title="Преименувай" style={iconBtn}>✎</button>
+                    <button onClick={() => delMeal(m)} title="Изтрий хранене" style={iconBtn}>🗑</button>
+                  </>}
                 </div>
                 {(m.plan_meal_items || []).length === 0 && <div style={{ padding: "10px 14px", color: t.muted, fontSize: 13 }}>Няма продукти.</div>}
                 {(m.plan_meal_items || []).map((it) => {
@@ -207,14 +316,14 @@ export default function Planner() {
                         <div style={{ fontSize: 13.5, color: t.ink, fontWeight: 600 }}>{name} {it.recipes && <span style={{ color: t.coral, fontSize: 11 }}>рецепта</span>}</div>
                         <div style={{ fontSize: 11.5, color: t.muted }}>П {round(tot.protein_g)} · В {round(tot.carbs_g)} · М {round(tot.fat_g)}</div>
                       </div>
-                      <Input type="number" value={it.qty} onChange={(e) => setQty(it.id, Number(e.target.value) || 0)} style={{ width: 70, textAlign: "center", padding: "6px" }} />
+                      <Input type="number" value={it.qty} disabled={locked} onChange={(e) => setQty(it.id, Number(e.target.value) || 0)} style={{ width: 70, textAlign: "center", padding: "6px", background: locked ? t.tealPale : "#fff" }} />
                       <span style={{ fontSize: 11, color: t.muted, width: 38 }}>{unitLabel}</span>
                       <div style={{ width: 54, textAlign: "right", fontWeight: 700, color: t.ink }}>{round(tot.kcal)}</div>
-                      <button onClick={() => delItem(it.id)} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted }}>✕</button>
+                      {!locked && <button onClick={() => delItem(it.id)} style={{ border: "none", background: "none", cursor: "pointer", color: t.muted }}>✕</button>}
                     </div>
                   );
                 })}
-                <button onClick={() => setPicker({ mealId: m.id })} style={{ width: "100%", border: "none", background: t.tealPale, color: t.tealDark, fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, padding: "10px", cursor: "pointer" }}>+ Добави продукт / рецепта</button>
+                {!locked && <button onClick={() => setPicker({ mealId: m.id })} style={{ width: "100%", border: "none", background: t.tealPale, color: t.tealDark, fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, padding: "10px", cursor: "pointer" }}>+ Добави продукт / рецепта</button>}
               </Card>
             );
           })}
@@ -362,6 +471,16 @@ function MicroAnalysis({ tree, client, onClose }) {
       <div style={{ fontSize: 11, color: t.muted, marginTop: 10 }}>Референтните стойности са ориентир за възрастни (по EFSA/стандартни източници) и се различават според възраст, пол и състояние. Желязото е коригирано по пол.</div>
     </Modal>
   );
+}
+
+function StatusBadge({ status }) {
+  const map = {
+    draft: { bg: "#eef4f3", fg: t.tealDark, label: "Чернова" },
+    final: { bg: t.coral, fg: "#fff", label: "Финал" },
+    archived: { bg: "#e9ecee", fg: t.muted, label: "Архив" },
+  };
+  const s = map[status] || map.draft;
+  return <span style={{ background: s.bg, color: s.fg, borderRadius: 20, padding: "3px 11px", fontSize: 11.5, fontWeight: 700 }}>{s.label}</span>;
 }
 
 function Modal({ title, children, onClose }) {
