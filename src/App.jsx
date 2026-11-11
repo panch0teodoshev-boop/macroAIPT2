@@ -10,6 +10,7 @@ import Calculator from "./screens/Calculator.jsx";
 import Foods from "./screens/Foods.jsx";
 import Planner from "./screens/Planner.jsx";
 import AIAssistant from "./screens/AIAssistant.jsx";
+import Settings from "./screens/Settings.jsx";
 import Admin from "./screens/Admin.jsx";
 
 const NAV = [
@@ -77,7 +78,7 @@ function Shell() {
       {view === "planner" && <Planner />}
       {view === "foods" && <Foods />}
       {view === "ai" && <AIAssistant />}
-      {view === "settings" && <Placeholder title="Настройки" text="Профил, език, GDPR експорт/изтриване — следващ етап." />}
+      {view === "settings" && <Settings />}
     </main>
   );
 
