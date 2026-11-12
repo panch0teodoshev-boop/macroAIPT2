@@ -53,7 +53,7 @@ function Shell() {
 
   const SidebarInner = (
     <>
-      <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 18 }}>PulseMacro <span style={{ color: t.coral }}>Pro</span></div>
+      <div style={{ fontSize: 19, fontWeight: 800, marginBottom: 18 }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
       <nav style={{ display: "grid", gap: 4, flex: 1 }}>
         {nav.map((it) => (
           <button key={it.id} onClick={() => goto(it.id)} style={{
@@ -101,7 +101,7 @@ function Shell() {
     <div style={{ fontFamily: FONT, background: t.bg, minHeight: "100vh" }}>
       <header style={{ background: t.tealDark, color: "#fff", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", position: "sticky", top: 0, zIndex: 40 }}>
         <button onClick={() => setMenuOpen(true)} aria-label="Меню" style={{ background: "rgba(255,255,255,0.14)", border: "none", color: "#fff", width: 38, height: 38, borderRadius: 9, cursor: "pointer", fontSize: 18 }}>☰</button>
-        <div style={{ fontSize: 17, fontWeight: 800 }}>PulseMacro <span style={{ color: t.coral }}>Pro</span></div>
+        <div style={{ fontSize: 17, fontWeight: 800 }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
         <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600 }}>{nav.find((x) => x.id === view)?.label}</div>
       </header>
 

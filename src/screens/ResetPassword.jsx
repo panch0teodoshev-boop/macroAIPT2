@@ -28,7 +28,7 @@ export default function ResetPassword() {
     <div style={{ minHeight: "100vh", background: t.bg, fontFamily: FONT, display: "grid", placeItems: "center", padding: 20 }}>
       <Card style={{ width: "100%", maxWidth: 380 }}>
         <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 22, fontWeight: 800, color: t.tealDark }}>PulseMacro <span style={{ color: t.coral }}>Pro</span></div>
+          <div style={{ fontSize: 22, fontWeight: 800, color: t.tealDark }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
           <div style={{ fontSize: 13, color: t.muted, marginTop: 2 }}>Задай нова парола</div>
         </div>
 

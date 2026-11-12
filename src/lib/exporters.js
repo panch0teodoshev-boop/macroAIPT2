@@ -57,7 +57,7 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
       <tr><td>Мазнини (г)</td><td class="r">${round(avg.fat_g)}</td><td class="r">${round(week.fat_g)}</td></tr>
       <tr><td>Фибри (г)</td><td class="r">${round(avg.fiber_g)}</td><td class="r">${round(week.fiber_g)}</td></tr>
     </tbody></table>
-    <p class="foot">Стойностите са ориентировъчни, изчислени от хранителната база на приложението. Не представляват медицинско предписание. PulseMacro Pro.</p>
+    <p class="foot">Стойностите са ориентировъчни, изчислени от хранителната база на приложението. Не представляват медицинско предписание. ProNutrition.</p>
   </body></html>`;
 
   const w = window.open("", "_blank");

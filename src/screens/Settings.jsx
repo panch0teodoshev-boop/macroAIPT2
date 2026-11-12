@@ -131,7 +131,7 @@ function GdprTools() {
         _meta: {
           export_type: "GDPR_data_portability_art20",
           generated_at: new Date().toISOString(),
-          app: "PulseMacro Pro",
+          app: "ProNutrition",
         },
         client: bundle,
       };
@@ -277,7 +277,7 @@ function renderClientHtml(b) {
     @media print{body{margin:12mm}}
   </style></head><body>
     <h1>Експорт на лични данни</h1>
-    <div class="sub">PulseMacro Pro · генериран на ${esc(new Date().toLocaleString("bg-BG"))} · GDPR чл.20</div>
+    <div class="sub">ProNutrition · генериран на ${esc(new Date().toLocaleString("bg-BG"))} · GDPR чл.20</div>
 
     <h2>Профил на клиента</h2>
     <table>
