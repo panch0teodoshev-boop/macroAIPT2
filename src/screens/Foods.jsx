@@ -5,9 +5,10 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { scaleNutrients, sumNutrients, round } from "../lib/nutrition.mjs";
+import { servingsOf, parseQty } from "../lib/planMath.mjs";
 
 const MACRO_KEYS = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "satfat_g"];
-const per100of = (f) => ({ kcal: +f.kcal || 0, protein_g: +f.protein_g || 0, carbs_g: +f.carbs_g || 0, fat_g: +f.fat_g || 0, fiber_g: +f.fiber_g || 0, sugar_g: +f.sugar_g || 0, satfat_g: +f.satfat_g || 0 });
+const per100of = (f) => Object.fromEntries(MACRO_KEYS.map((k) => [k, f[k] == null || f[k] === "" ? null : Number(f[k])]));
 
 export default function Foods() {
   const [tab, setTab] = useState("foods");
@@ -33,12 +34,14 @@ function FoodsList() {
   const [q, setQ] = useState("");
   const [cat, setCat] = useState("all");
   const [adding, setAdding] = useState(false);
+  const [err, setErr] = useState("");
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase.from("foods")
+    const { data, error } = await supabase.from("foods")
       .select("id, owner_id, name_bg, name_en, category, unit, kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, satfat_g")
       .eq("archived", false).order("name_bg").limit(2000);
+    setErr(error ? "Храните не можаха да се заредят: " + error.message : "");
     setRows(data || []); setLoading(false);
   }
   useEffect(() => { load(); }, []);
@@ -58,7 +61,8 @@ function FoodsList() {
         <Select value={cat} onChange={setCat} style={{ width: "auto", minWidth: 160 }} options={cats.map((c) => ({ value: c, label: c === "all" ? "Всички категории" : c }))} />
         <Button onClick={() => setAdding(true)}>+ Нов продукт</Button>
       </div>
-      <div style={{ fontSize: 12.5, color: t.muted }}>{loading ? "Зареждане…" : `${filtered.length} от ${rows.length} храни · стойности на 100 г`}</div>
+      {err && <Card style={{ color: t.warn }}>{err}</Card>}
+      <div style={{ fontSize: 12.5, color: t.muted }}>{loading ? "Зареждане…" : `${filtered.length} от ${rows.length} храни · стойности на 100 г (или на брой)${filtered.length > 500 ? " · показани са първите 500 — стесни търсенето" : ""}`}</div>
 
       <Card style={{ padding: 0, overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>
@@ -73,7 +77,7 @@ function FoodsList() {
                 <tr key={r.id} style={{ background: i % 2 ? t.tealPale : "#fff" }}>
                   <td style={td}>{r.name_bg} {r.owner_id && <span style={{ color: t.coral, fontSize: 11 }}>(мой)</span>}<div style={{ fontSize: 11, color: t.muted }}>{r.name_en}</div></td>
                   <td style={tdm}>{r.category}</td>
-                  <td style={tdC}><b>{round(r.kcal)}</b></td><td style={tdC}>{round(r.protein_g, 1)}</td><td style={tdC}>{round(r.carbs_g, 1)}</td><td style={tdC}>{round(r.fat_g, 1)}</td><td style={tdC}>{r.fiber_g != null ? round(r.fiber_g, 1) : "—"}</td>
+                  <td style={tdC}><b>{dash(r.kcal, 0)}</b></td><td style={tdC}>{dash(r.protein_g)}</td><td style={tdC}>{dash(r.carbs_g)}</td><td style={tdC}>{dash(r.fat_g)}</td><td style={tdC}>{dash(r.fiber_g)}</td>
                 </tr>
               ))}
             </tbody>
@@ -90,9 +94,18 @@ function FoodForm({ ownerId, onClose, onSaved }) {
   const [f, setF] = useState({ name_bg: "", name_en: "", category: "", unit: "100g", kcal: "", protein_g: "", carbs_g: "", fat_g: "", fiber_g: "", sugar_g: "", satfat_g: "" });
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
-  const num = (v) => (v === "" ? null : Number(v));
+  const num = (v) => (v === "" ? null : Number(String(v).replace(",", ".")));
   const save = async () => {
+    if (busy) return;
     if (!f.name_bg.trim() || f.kcal === "") { setErr("Име и калории са задължителни."); return; }
+    const vals = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "satfat_g"].map((k) => num(f[k]));
+    if (vals.some((v) => v != null && (!isFinite(v) || v < 0))) { setErr("Стойностите трябва да са неотрицателни числа."); return; }
+    if (f.unit === "100g" && [1, 2, 3].some((i) => vals[i] != null && vals[i] > 100)) { setErr("Протеин, въглехидрати и мазнини не могат да надвишават 100 г на 100 г продукт."); return; }
+    // сверка: калориите от макросите (4/4/9) спрямо въведените — хваща грешки при въвеждане
+    if (vals[1] != null && vals[2] != null && vals[3] != null) {
+      const est = 4 * vals[1] + 4 * vals[2] + 9 * vals[3];
+      if (Math.abs(est - vals[0]) > Math.max(25, 0.25 * est) && !confirm(`Въведени са ${vals[0]} kcal, а от макросите излизат около ${Math.round(est)} kcal. Да запиша ли въпреки разликата?`)) return;
+    }
     setBusy(true); setErr("");
     const { error } = await supabase.from("foods").insert({
       owner_id: ownerId, name_bg: f.name_bg.trim(), name_en: f.name_en.trim() || null, category: f.category.trim() || null, unit: f.unit,
@@ -133,22 +146,31 @@ function Recipes() {
   const [foods, setFoods] = useState([]);
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [err, setErr] = useState("");
 
   async function load() {
     setLoading(true);
-    const [{ data: rs }, { data: fs }] = await Promise.all([
+    const [{ data: rs, error: e1 }, { data: fs }] = await Promise.all([
       supabase.from("recipes").select("id, owner_id, name, category, servings, notes, recipe_ingredients(id, qty, unit, snapshot, foods(name_bg))").order("created_at", { ascending: false }),
       supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g, sugar_g, satfat_g").eq("archived", false).order("name_bg").limit(2000),
     ]);
+    if (e1) setErr("Рецептите не можаха да се заредят: " + e1.message);
     setRecipes(rs || []); setFoods(fs || []); setLoading(false);
   }
   useEffect(() => { load(); }, []);
 
   const calc = (r) => {
-    const items = (r.recipe_ingredients || []).map((ing) => scaleNutrients(ing.snapshot || {}, ing.qty, ing.unit));
-    const { totals } = sumNutrients(items);
-    const s = Math.max(1, r.servings || 1);
-    return { totals, per: Object.fromEntries(MACRO_KEYS.map((k) => [k, (totals[k] || 0) / s])) };
+    const items = (r.recipe_ingredients || []).map((ing) => scaleNutrients(macrosOnly(ing.snapshot), Number(ing.qty), ing.unit));
+    const { totals, missing } = sumNutrients(items);
+    const s = servingsOf(r.servings); // дробни порции са валидни (напр. 0.5)
+    const incomplete = ["kcal", "protein_g", "carbs_g", "fat_g"].some((k) => missing[k] > 0);
+    return { totals, incomplete, per: Object.fromEntries(MACRO_KEYS.map((k) => [k, (totals[k] || 0) / s])) };
+  };
+  const remove = async (r) => {
+    if (!confirm(`Да изтрия рецептата „${r.name}"? Вече добавените в режими порции запазват стойностите си.`)) return;
+    const { error } = await supabase.from("recipes").delete().eq("id", r.id);
+    if (error) { setErr(error.message.includes("plan_meal_items_check") ? "Рецептата се използва в режим и не може да се изтрие, докато не се приложи миграция 0004." : "Изтриването не успя: " + error.message); return; }
+    setErr(""); load();
   };
 
   return (
@@ -156,6 +178,7 @@ function Recipes() {
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Button onClick={() => setCreating(true)}>+ Нова рецепта</Button>
       </div>
+      {err && <Card role="alert" style={{ color: t.warn }}>{err}</Card>}
       {loading ? <Card>Зареждане…</Card> : recipes.length === 0 ? <Card style={{ color: t.muted }}>Още няма рецепти. Създай първата.</Card> : (
         <div style={{ display: "grid", gap: 10 }}>
           {recipes.map((r) => {
@@ -173,7 +196,7 @@ function Recipes() {
                     </div>
                     <div style={{ fontSize: 12, color: t.muted }}>{r.category || "—"} · {r.servings} порции · {(r.recipe_ingredients || []).length} съставки</div>
                   </div>
-                  {mine && <button onClick={async () => { await supabase.from("recipes").delete().eq("id", r.id); load(); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer" }}>Изтрий</button>}
+                  {mine && <button onClick={() => remove(r)} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer" }}>Изтрий</button>}
                 </div>
                 {ingLine && <div style={{ fontSize: 13, color: t.ink, marginTop: 10, background: t.bg, border: `1px solid ${t.line}`, borderRadius: 10, padding: "8px 12px" }}>
                   <span style={{ fontWeight: 700, color: t.muted }}>Съставки: </span>{ingLine}
@@ -182,6 +205,7 @@ function Recipes() {
                   <Nut label="За порция" v={c.per} accent />
                   <Nut label="Общо" v={c.totals} />
                 </div>
+                {c.incomplete && <div style={{ fontSize: 12, color: t.warn, marginTop: 6 }}>⚠️ Някои съставки нямат пълни данни — стойностите са долна граница.</div>}
                 {r.notes && <details style={{ marginTop: 10 }}>
                   <summary style={{ cursor: "pointer", color: t.tealDark, fontWeight: 700, fontSize: 13 }}>Приготвяне</summary>
                   <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, color: t.ink, marginTop: 6, lineHeight: 1.5 }}>{r.notes}</div>
@@ -200,7 +224,7 @@ function Nut({ label, v, accent }) {
   return (
     <div style={{ background: accent ? t.tealPale : "#fff", border: `1px solid ${t.line}`, borderRadius: 10, padding: "8px 12px" }}>
       <div style={{ fontSize: 11, fontWeight: 700, color: t.muted }}>{label}</div>
-      <div style={{ color: t.ink }}><b style={{ color: accent ? t.coral : t.tealDark }}>{round(v.kcal)}</b> kcal · П {round(v.protein_g, 1)} · В {round(v.carbs_g, 1)} · М {round(v.fat_g, 1)} · Фибри {round(v.fiber_g, 1)}</div>
+      <div style={{ color: t.ink }}><b style={{ color: accent ? t.coral : t.tealDark }}>{round(v.kcal || 0)}</b> kcal · П {round(v.protein_g || 0, 1)} · В {round(v.carbs_g || 0, 1)} · М {round(v.fat_g || 0, 1)} · Фибри {round(v.fiber_g || 0, 1)}</div>
     </div>
   );
 }
@@ -216,18 +240,26 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
 
   const found = q.trim() ? foods.filter((f) => (f.name_bg + " " + (f.name_en || "")).toLowerCase().includes(q.trim().toLowerCase())).slice(0, 8) : [];
-  const totals = sumNutrients(ings.map((it) => scaleNutrients(per100of(it.food), it.qty, it.food.unit))).totals;
-  const per = Object.fromEntries(MACRO_KEYS.map((k) => [k, (totals[k] || 0) / Math.max(1, servings)]));
+  const totals = sumNutrients(ings.map((it) => scaleNutrients(per100of(it.food), parseQty(it.qty) ?? 0, it.food.unit))).totals;
+  const sv = parseQty(servings, 999);
+  const per = Object.fromEntries(MACRO_KEYS.map((k) => [k, (totals[k] || 0) / servingsOf(sv)]));
 
   const save = async () => {
+    if (busy) return;
     if (!name.trim() || ings.length === 0) { setErr("Име и поне една съставка са нужни."); return; }
+    if (sv == null || sv <= 0) { setErr("Порциите трябва да са число над 0 (може и дробно, напр. 0.5)."); return; }
+    const bad = ings.find((it) => { const q = parseQty(it.qty); return q == null || q <= 0; });
+    if (bad) { setErr(`Невалидно количество за „${bad.food.name_bg}" — въведи число над 0.`); return; }
     setBusy(true); setErr("");
-    const { data: rec, error: e1 } = await supabase.from("recipes").insert({ owner_id: ownerId, name: name.trim(), category: category.trim() || null, servings: Number(servings) || 1, notes: notes.trim() || null }).select("id").single();
+    const { data: rec, error: e1 } = await supabase.from("recipes").insert({ owner_id: ownerId, name: name.trim(), category: category.trim() || null, servings: sv, notes: notes.trim() || null }).select("id").single();
     if (e1) { setErr(e1.message); setBusy(false); return; }
-    const payload = ings.map((it) => ({ recipe_id: rec.id, food_id: it.food.id, qty: Number(it.qty) || 0, unit: it.food.unit, snapshot: { ...per100of(it.food), name: it.food.name_bg } }));
+    const payload = ings.map((it) => ({ recipe_id: rec.id, food_id: it.food.id, qty: parseQty(it.qty), unit: it.food.unit, snapshot: { ...per100of(it.food), name: it.food.name_bg } }));
     const { error: e2 } = await supabase.from("recipe_ingredients").insert(payload);
+    if (e2) {
+      await supabase.from("recipes").delete().eq("id", rec.id); // без „празна" рецепта при неуспех на съставките
+      setBusy(false); setErr("Записът на съставките не успя: " + e2.message); return;
+    }
     setBusy(false);
-    if (e2) { setErr(e2.message); return; }
     onSaved();
   };
 
@@ -236,7 +268,7 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
       <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 120px", gap: 10 }}>
         <Field label="Име *"><Input value={name} onChange={(e) => setName(e.target.value)} /></Field>
         <Field label="Категория"><Input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="напр. Обяд" /></Field>
-        <Field label="Порции"><Input type="number" min={1} value={servings} onChange={(e) => setServings(e.target.value)} /></Field>
+        <Field label="Порции"><Input type="number" min={0.1} step="any" value={servings} onChange={(e) => setServings(e.target.value)} /></Field>
       </div>
       <Field label="Приготвяне (стъпки)"><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={4} placeholder={"1) ...\n2) ..."} style={{ width: "100%", fontFamily: "inherit", fontSize: 14, color: t.ink, border: `1px solid ${t.line}`, borderRadius: 10, padding: "10px 12px", outline: "none", resize: "vertical" }} /></Field>
 
@@ -270,6 +302,10 @@ function RecipeForm({ ownerId, foods, onClose, onSaved }) {
     </Modal>
   );
 }
+
+const dash = (v, d = 1) => (v == null ? "—" : round(Number(v), d)); // липсваща стойност се показва като „—", не като 0
+// от снапшота взимаме само числовите хранителни полета (името и др. не са нутриенти)
+const macrosOnly = (snap) => Object.fromEntries(MACRO_KEYS.map((k) => [k, snap?.[k] == null ? null : Number(snap[k])]));
 
 /* ---------------- shared modal + table styles ---------------- */
 function Modal({ title, children, onClose, wide }) {

@@ -41,30 +41,38 @@ function Nutritionists() {
 
   async function load() {
     setLoading(true);
-    const { data } = await supabase.from("profiles").select("id, email, full_name, role, status, client_limit, created_at").order("created_at");
+    const { data, error } = await supabase.from("profiles").select("id, email, full_name, role, status, client_limit, created_at").order("created_at");
+    if (error) setMsg("Профилите не можаха да се заредят: " + error.message);
     setRows(data || []);
-    // брой клиенти на всеки (админ вижда всички редове в clients? не — RLS ги крие). Броим през view-safe RPC fallback:
-    const { data: cc } = await supabase.from("clients").select("nutritionist_id");
-    const map = {}; (cc || []).forEach((r) => (map[r.nutritionist_id] = (map[r.nutritionist_id] || 0) + 1));
-    setCounts(map);
+    // Брой клиенти: админът няма достъп до самите клиенти (RLS), затова броим през функцията
+    // admin_client_counts() от миграция 0004. Докато тя не е приложена → null („няма данни"), не подвеждаща 0.
+    const { data: cc, error: ce } = await supabase.rpc("admin_client_counts");
+    if (ce) setCounts(null);
+    else { const map = {}; (cc || []).forEach((r) => (map[r.nutritionist_id] = Number(r.active_clients))); setCounts(map); }
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
 
   async function logAction(action, target, meta) {
     // запис в журнала (insert позволен на админ чрез RLS? таблицата е само за четене от админ; записваме best-effort)
-    try { await supabase.from("admin_audit").insert({ actor_id: profile.id, action, target, meta }); } catch (e) {}
+    const { error } = await supabase.from("admin_audit").insert({ actor_id: profile.id, action, target, meta });
+    if (error) console.warn("Одит записът не успя:", error.message);
   }
 
   async function setStatus(r, status) {
-    await supabase.from("profiles").update({ status }).eq("id", r.id);
-    await logAction("set_status", r.email, { status });
-    load();
+    if (r.id === profile.id) { setMsg("Не можеш да променяш собствения си статус."); return; }
+    if (status !== "active" && !confirm(`${r.email} ще загуби достъп до приложението. Продължаваме ли?`)) return;
+    const { error } = await supabase.from("profiles").update({ status }).eq("id", r.id);
+    if (error) { setMsg("Смяната на статуса не успя: " + error.message); return; }
+    await logAction("set_status", r.email, { from: r.status, to: status });
+    setMsg(`Статусът на ${r.email} е променен.`); load();
   }
   async function setLimit(r, client_limit) {
-    await supabase.from("profiles").update({ client_limit }).eq("id", r.id);
-    await logAction("set_limit", r.email, { client_limit });
-    load();
+    if (client_limit != null && (!Number.isInteger(client_limit) || client_limit < 0)) { setMsg("Лимитът трябва да е цяло число ≥ 0 (празно = без лимит)."); load(); return; }
+    const { error } = await supabase.from("profiles").update({ client_limit }).eq("id", r.id);
+    if (error) { setMsg("Смяната на лимита не успя: " + error.message); return; }
+    await logAction("set_limit", r.email, { from: r.client_limit, to: client_limit });
+    setMsg(`Лимитът на ${r.email} е променен.`); load();
   }
 
   return (
@@ -87,9 +95,9 @@ function Nutritionists() {
                   <td style={td}><div style={{ fontWeight: 600 }}>{r.full_name || "—"}</div><div style={{ fontSize: 12, color: t.muted }}>{r.email}</div></td>
                   <td style={td}>{r.role === "super_admin" ? "Админ" : "Нутриционист"}</td>
                   <td style={td}><span style={{ color: statusColor(r.status), fontWeight: 700 }}>{STATUS.find((s) => s.value === r.status)?.label || r.status}</span></td>
-                  <td style={tdC}>{counts[r.id] || 0}</td>
+                  <td style={tdC} title={counts ? undefined : "Нужна е миграция 0004"}>{counts ? (counts[r.id] || 0) : "—"}</td>
                   <td style={tdC}>
-                    <input type="number" defaultValue={r.client_limit ?? ""} placeholder="∞" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== r.client_limit) setLimit(r, v); }} style={{ width: 60, textAlign: "center", border: `1px solid ${t.line}`, borderRadius: 6, padding: "4px" }} />
+                    <input type="number" min={0} step={1} aria-label={`Лимит клиенти за ${r.email}`} key={`${r.id}:${r.client_limit}`} defaultValue={r.client_limit ?? ""} placeholder="∞" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== r.client_limit) setLimit(r, v); }} style={{ width: 60, textAlign: "center", border: `1px solid ${t.line}`, borderRadius: 6, padding: "4px" }} />
                   </td>
                   <td style={td}>
                     {r.role !== "super_admin" && <Select value={r.status} onChange={(v) => setStatus(r, v)} style={{ width: "auto", padding: "4px 8px", fontSize: 12.5 }} options={STATUS} />}
@@ -112,7 +120,9 @@ function NewNutritionist({ onClose, onCreated, onLog }) {
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
 
   const save = async () => {
+    if (busy) return;
     if (!f.email.trim() || !f.user_id.trim()) { setErr("Имейл и User UID са задължителни."); return; }
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(f.user_id.trim())) { setErr("User UID не е валиден (очаква се формат xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."); return; }
     setBusy(true); setErr("");
     const { error } = await supabase.from("profiles").insert({
       id: f.user_id.trim(), email: f.email.trim(), full_name: f.full_name.trim() || null,

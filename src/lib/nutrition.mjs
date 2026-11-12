@@ -1,5 +1,5 @@
 /**
- * PulseMacro Pro — ЕДИНЕН ЦЕНТРАЛЕН КАЛКУЛАЦИОНЕН МОДУЛ
+ * ProNutrition — ЕДИНЕН ЦЕНТРАЛЕН КАЛКУЛАЦИОНЕН МОДУЛ
  * ====================================================
  * Изискване 14: всички хранителни изчисления минават оттук, без дублиране.
  * Чист JS без зависимости → ползва се във frontend, тестове и edge функции.
@@ -15,10 +15,15 @@ export const KCAL_PER_G = { protein: 4, carbs: 4, fat: 9, alcohol: 7 };
 export const KCAL_PER_KG_BODY = 7700; // приблизителна енергия в 1 кг телесна маса
 
 const num = (v) => (typeof v === "number" && isFinite(v) ? v : NaN);
+/**
+ * Закръгляне САМО за визуализация: „половинка далеч от нулата" (2.5 → 3, −2.5 → −3),
+ * с корекция за двоичното представяне (1.005 → 1.01) и без „−0" в интерфейса.
+ */
 export const round = (v, d = 0) => {
   if (!isFinite(v)) return 0;
   const f = 10 ** d;
-  return Math.round(v * f) / f;
+  const r = (Math.sign(v) * Math.round(Math.abs(v) * f * (1 + Number.EPSILON))) / f;
+  return r === 0 ? 0 : r;
 };
 
 /* ------------------------------------------------------------------ */
@@ -61,8 +66,10 @@ export function calcBMR(method, input) {
     case "harris_benedict": return bmrHarrisBenedict(input);
     case "katch_mcardle": {
       const r = bmrKatchMcArdle(input);
-      if (isFinite(r.value) && r.value > 0) return r;
-      return bmrMifflin(input); // безопасен резерв
+      const lbm = r.params.leanMassKg;
+      if (isFinite(r.value) && isFinite(lbm) && lbm > 0 && lbm <= num(input.weightKg ?? lbm)) return r;
+      // липсва/невалидна чиста маса → Mifflin, като изрично отбелязваме подмяната
+      return { ...bmrMifflin(input), fallbackFrom: "katch_mcardle" };
     }
     case "mifflin":
     default: return bmrMifflin(input);
@@ -154,6 +161,8 @@ export function calcMacros({ calories, weightKg, spec }) {
     totalKcal: cal,
     // валидация: сборът от макро-калории срещу зададените калории
     reconciledKcal: proteinKcal + fatKcal + carbsKcal,
+    // > 0, когато протеин + мазнини сами надхвърлят калориите (въглехидратите стават 0)
+    overAllocatedKcal: Math.max(0, proteinKcal + fatKcal - cal),
   };
 }
 

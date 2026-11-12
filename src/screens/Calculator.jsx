@@ -6,7 +6,9 @@ import {
   calcBMR, calcTDEE, calcEnergyTarget, calcMacros, calcBMI, predictWeeklyWeightChange, round, ACTIVITY_FACTORS,
 } from "../lib/nutrition.mjs";
 
-const n = (v) => (v === "" || v == null ? NaN : Number(v));
+const n = (v) => (v === "" || v == null ? NaN : Number(String(v).replace(",", ".")));
+const FORMULA_BG = { mifflin: "Mifflin–St Jeor", harris_benedict: "Harris–Benedict", katch_mcardle: "Katch–McArdle" };
+const BMI_BG = { underweight: "поднормено", normal: "нормално", overweight: "наднормено", obese: "затлъстяване", unknown: "" };
 
 export default function Calculator({ initial }) {
   const [f, setF] = useState({
@@ -33,8 +35,16 @@ export default function Calculator({ initial }) {
     });
     const bmi = calcBMI({ weightKg: n(f.weightKg), heightCm: n(f.heightCm) });
     const pred = predictWeeklyWeightChange(energy.deltaVsMaintain);
-    return { bmr, tdee, factor, energy, macros, bmi, pred };
+    const warnings = [];
+    const rng = (v, lo, hi, label) => { if (!isFinite(v)) warnings.push(`Липсва ${label}.`); else if (v < lo || v > hi) warnings.push(`${label[0].toUpperCase() + label.slice(1)} извън реалистичния диапазон (${lo}–${hi}).`); };
+    rng(input.weightKg, 25, 350, "тегло"); rng(input.heightCm, 100, 250, "ръст"); rng(input.age, 14, 110, "възраст");
+    if (bmr.fallbackFrom) warnings.push("Katch–McArdle изисква валиден % телесни мазнини (1–70). Използвана е Mifflin–St Jeor.");
+    if (macros.overAllocatedKcal > 0) warnings.push(`Протеинът и мазнините заедно надхвърлят дневната цел с ${round(macros.overAllocatedKcal)} kcal — въглехидратите са 0. Намали стойностите.`);
+    if (energy.target > 0 && energy.target < bmr.value) warnings.push(`Целта (${round(energy.target)} kcal) е под базалния метаболизъм (${round(bmr.value)} kcal).`);
+    const valid = isFinite(bmr.value) && bmr.value > 0;
+    return { bmr, tdee, factor, energy, macros, bmi, pred, warnings, valid };
   }, [f]);
+  const show = (v, d = 0) => (r.valid && isFinite(v) ? round(v, d) : "—");
 
   return (
     <div style={{ display: "grid", gap: 16, gridTemplateColumns: twoCol ? "minmax(280px,360px) 1fr" : "1fr", alignItems: "start" }}>
@@ -76,19 +86,23 @@ export default function Calculator({ initial }) {
       </Card>
 
       <div style={{ display: "grid", gap: 14 }}>
+        {initial?.clientName && <Card style={{ background: t.tealPale, border: "none", color: t.tealDark, fontSize: 13, padding: "9px 14px" }}>Заредени са данните на клиент <b>{initial.clientName}</b>. Калкулаторът не променя профила му.</Card>}
+        {r.warnings.length > 0 && <Card role="alert" style={{ background: t.coralLight, border: "none", color: t.coralDark, fontSize: 13, padding: "10px 14px" }}>
+          {r.warnings.map((w) => <div key={w}>⚠️ {w}</div>)}
+        </Card>}
         <div style={{ display: "grid", gridTemplateColumns: statCols, gap: 12 }}>
-          <Stat label="BMR" value={round(r.bmr.value)} unit="kcal" />
-          <Stat label={`TDEE (×${r.factor})`} value={round(r.tdee)} unit="kcal" />
-          <Stat label="Дневна цел" value={round(r.energy.target)} unit="kcal" accent={t.coral} />
+          <Stat label={`BMR (${FORMULA_BG[r.bmr.formula]})`} value={show(r.bmr.value)} unit="kcal" />
+          <Stat label={`TDEE (×${r.factor})`} value={show(r.tdee)} unit="kcal" />
+          <Stat label="Дневна цел" value={show(r.energy.target)} unit="kcal" accent={t.coral} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: statCols, gap: 12 }}>
-          <Stat label="Протеин" value={round(r.macros.protein.grams)} unit={`г · ${round(r.macros.protein.pct)}%`} accent="#E08A66" />
-          <Stat label="Въглехидрати" value={round(r.macros.carbs.grams)} unit={`г · ${round(r.macros.carbs.pct)}%`} accent={t.coralDark} />
-          <Stat label="Мазнини" value={round(r.macros.fat.grams)} unit={`г · ${round(r.macros.fat.pct)}%`} accent={t.tealDark} />
+          <Stat label="Протеин" value={show(r.macros.protein.grams)} unit={`г · ${show(r.macros.protein.pct)}%`} accent="#E08A66" />
+          <Stat label="Въглехидрати" value={show(r.macros.carbs.grams)} unit={`г · ${show(r.macros.carbs.pct)}%`} accent={t.coralDark} />
+          <Stat label="Мазнини" value={show(r.macros.fat.grams)} unit={`г · ${show(r.macros.fat.pct)}%`} accent={t.tealDark} />
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-          <Stat label="BMI" value={round(r.bmi.bmi, 1)} unit={r.bmi.band} />
-          <Stat label="Прогноза тегло" value={`${r.pred.kgPerWeek >= 0 ? "+" : ""}${round(r.pred.kgPerWeek, 2)}`} unit="кг/седм." accent={r.pred.kgPerWeek > 0 ? t.coral : t.good} />
+          <Stat label="BMI" value={isFinite(r.bmi.bmi) ? round(r.bmi.bmi, 1) : "—"} unit={BMI_BG[r.bmi.band]} />
+          <Stat label="Прогноза тегло" value={r.valid ? `${r.pred.kgPerWeek > 0 ? "+" : ""}${round(r.pred.kgPerWeek, 2)}` : "—"} unit="кг/седм." accent={r.pred.kgPerWeek > 0 ? t.coral : t.good} />
         </div>
         <Card style={{ background: t.tealPale, border: "none" }}>
           <div style={{ fontSize: 12.5, color: t.tealDark, fontWeight: 700, marginBottom: 6 }}>Проверимост (формула и параметри)</div>
