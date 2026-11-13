@@ -1,5 +1,5 @@
 {
-  "name": "pulsemacro-pro",
+  "name": "pronutrition",
   "private": true,
   "version": "0.1.0",
   "type": "module",
@@ -7,7 +7,11 @@
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "test": "node --test src/lib/nutrition.test.mjs"
+    "test": "node --test src/lib/nutrition.test.mjs src/lib/planMath.test.mjs cloudflare/worker.test.mjs",
+    "test:rls": "node --test tests/rls/baseline.test.mjs tests/rls/hardened.test.mjs",
+    "test:e2e": "VITE_SUPABASE_URL=https://test.supabase.co VITE_SUPABASE_ANON_KEY=anon-test VITE_AI_PROXY_URL=https://ai.test/ vite build --outDir dist-e2e && node --test --test-timeout=120000 tests/e2e/app.e2e.mjs",
+    "test:all": "npm test && npm run test:rls && npm run test:e2e",
+    "lint": "eslint ."
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.4",
@@ -15,7 +19,11 @@
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.16",
     "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react": "^7.37.5",
+    "globals": "^17.14.0",
     "vite": "^5.4.0"
   }
 }

@@ -13,6 +13,7 @@ import Planner from "./screens/Planner.jsx";
 import AIAssistant from "./screens/AIAssistant.jsx";
 import Settings from "./screens/Settings.jsx";
 import Admin from "./screens/Admin.jsx";
+import { ageFromBirthDate } from "./lib/planMath.mjs";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard" },
@@ -29,6 +30,7 @@ function Shell() {
   const { isDesktop } = useViewport();
   const [view, setView] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
+  const [calcInitial, setCalcInitial] = useState(null);
 
   if (loading) return <Center>Зареждане…</Center>;
   if (recovery) return <ResetPassword />;
@@ -49,7 +51,13 @@ function Shell() {
   </Center>;
 
   const nav = profile.role === "super_admin" ? [{ id: "admin", label: "Админ панел" }, ...NAV] : NAV;
-  const goto = (id) => { setView(id); setMenuOpen(false); };
+  const goto = (id) => { setCalcInitial(null); setView(id); setMenuOpen(false); };
+  const openCalcFor = (c) => {
+    const age = ageFromBirthDate(c.birth_date);
+    setCalcInitial({ clientName: `${c.first_name} ${c.last_name || ""}`.trim(), sex: c.sex || "male", weightKg: c.weight_kg ?? "", heightCm: c.height_cm ?? "", age: age ?? "", activity: c.activity_level || "moderate" });
+    setView("calculator"); setMenuOpen(false);
+  };
+  const openPlanFor = (c) => { try { localStorage.setItem("pn.planner.client", c.id); } catch { /* няма достъп */ } goto("planner"); };
 
   const SidebarInner = (
     <>
@@ -74,8 +82,8 @@ function Shell() {
   const content = (
     <main style={{ padding: isDesktop ? 24 : 16, overflow: "auto" }}>
       {view === "dashboard" && <Dashboard profile={profile} go={goto} />}
-      {view === "clients" && <Clients onOpen={() => goto("calculator")} />}
-      {view === "calculator" && <Calculator />}
+      {view === "clients" && <Clients onCalc={openCalcFor} onPlan={openPlanFor} />}
+      {view === "calculator" && <Calculator initial={calcInitial} />}
       {view === "admin" && <Admin />}
       {view === "planner" && <Planner />}
       {view === "foods" && <Foods />}
@@ -118,9 +126,6 @@ function Shell() {
   );
 }
 
-function Placeholder({ title, text }) {
-  return <div><h2 style={{ color: t.ink, marginTop: 0 }}>{title}</h2><Card style={{ color: t.muted }}>{text}</Card></div>;
-}
 function Center({ children }) {
   return <div style={{ fontFamily: FONT, minHeight: "100vh", background: t.bg, display: "grid", placeItems: "center", color: t.muted, padding: 20 }}>{children}</div>;
 }

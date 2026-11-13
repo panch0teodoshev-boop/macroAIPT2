@@ -1,25 +1,13 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { supabase } from "../lib/supabase.js";
 import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
-import { Button, Card, Select } from "../ui/primitives.jsx";
-import { calcBMR, calcTDEE, calcEnergyTarget, calcMacros, round } from "../lib/nutrition.mjs";
+import { Button, Select } from "../ui/primitives.jsx";
+import { round } from "../lib/nutrition.mjs";
+import { dayTotals, weekSummary, clientTarget as targetFor } from "../lib/planMath.mjs";
+import { aiRequest, trimHistory } from "../lib/ai.js";
 
-const AI_ENDPOINT = import.meta.env.VITE_AI_PROXY_URL || "";
-const MK = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"];
-const zero = () => ({ kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 });
-function itemTot(it) { const q = +it.qty || 0, s = it.snapshot || {}, f = it.unit === "serving" || it.unit === "piece" ? q : q / 100; const o = zero(); for (const k of MK) o[k] = (+s[k] || 0) * f; return o; }
-
-function targetFor(c) {
-  if (!c) return null;
-  const age = c.birth_date ? Math.max(14, Math.floor((Date.now() - new Date(c.birth_date)) / 3.15576e10)) : 30;
-  const bmr = calcBMR("mifflin", { sex: c.sex || "male", weightKg: +c.weight_kg || 70, heightCm: +c.height_cm || 170, age }).value;
-  const { tdee } = calcTDEE({ bmr, activityLevel: c.activity_level || "moderate" });
-  const mode = { reduction: "deficit_pct", muscle_gain: "surplus_pct" }[c.main_goal] || "maintain";
-  const energy = calcEnergyTarget({ tdee, mode, value: 15 });
-  const m = calcMacros({ calories: energy.target, weightKg: +c.weight_kg || 70, spec: { protein: { mode: "g_per_kg", value: 2 }, fat: { mode: "g_per_kg", value: 1 } } });
-  return { age, tdee, kcal: energy.target, protein_g: m.protein.grams, carbs_g: m.carbs.grams, fat_g: m.fat.grams };
-}
+const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 
 const QUICK = [
   "Анализирай седмичния режим и в кои дни протеинът е под целта.",
@@ -47,24 +35,30 @@ export default function AIAssistant() {
     if (!id) return;
     const { data: c } = await supabase.from("clients").select("*").eq("id", id).single();
     const target = targetFor(c);
-    // план (последна версия) → среден дневен прием + микро покритие
-    let planAvg = null, microCoverage = null;
-    const { data: plan } = await supabase.from("plans").select("id").eq("client_id", id).limit(1).maybeSingle();
+    // режим: финалната версия, иначе най-новата неархивирана → дневни суми (смята ги приложението, не моделът)
+    let planAvg = null, microCoverage = null, perDay = null, planInfo = null;
+    const { data: plan } = await supabase.from("plans").select("id").eq("client_id", id).order("created_at").limit(1).maybeSingle();
     if (plan) {
-      const { data: ver } = await supabase.from("plan_versions").select("id").eq("plan_id", plan.id).order("version", { ascending: false }).limit(1).maybeSingle();
+      const { data: vers } = await supabase.from("plan_versions").select("id, version, status").eq("plan_id", plan.id).order("version", { ascending: false });
+      const ver = (vers || []).find((v) => v.status === "final") || (vers || []).find((v) => v.status !== "archived") || (vers || [])[0];
       if (ver) {
-        const { data: days } = await supabase.from("plan_days").select("weekday, plan_meals(plan_meal_items(qty, unit, snapshot, foods(micros)))").eq("version_id", ver.id);
-        const tot = zero(); let foodItems = 0, withMic = 0;
-        (days || []).forEach((d) => (d.plan_meals || []).forEach((m) => (m.plan_meal_items || []).forEach((it) => {
-          const x = itemTot(it); for (const k of MK) tot[k] += x[k];
+        const { data: days } = await supabase.from("plan_days").select("weekday, plan_meals(name, position, plan_meal_items(qty, unit, snapshot, foods(micros)))").eq("version_id", ver.id).order("weekday");
+        const seen = new Set(); const tree = (days || []).filter((d) => !seen.has(d.weekday) && seen.add(d.weekday));
+        const w = weekSummary(tree);
+        let foodItems = 0, withMic = 0;
+        tree.forEach((d) => (d.plan_meals || []).forEach((m) => (m.plan_meal_items || []).forEach((it) => {
           if (it.unit !== "serving") { foodItems++; if (it.foods?.micros && Object.keys(it.foods.micros).length) withMic++; }
         })));
-        planAvg = Object.fromEntries(MK.map((k) => [k, tot[k] / 7]));
-        microCoverage = foodItems ? Math.round((withMic / foodItems) * 100) : 0;
+        if (w.items > 0) {
+          planAvg = w.avg;
+          perDay = tree.map((d) => ({ weekday: d.weekday, ...dayTotals(d), meals: (d.plan_meals || []).filter((m) => (m.plan_meal_items || []).length).map((m) => `${m.name}: ${(m.plan_meal_items || []).map((it) => `${it.snapshot?.name || "?"} ${round(it.qty, 1)}${it.unit === "serving" ? " порц." : it.unit === "piece" ? " бр" : " г"}`).join(", ")}`) }));
+          planInfo = { version: ver.version, status: ver.status, filledDays: w.filledDays, incompleteItems: w.incompleteItems };
+          microCoverage = foodItems ? Math.round((withMic / foodItems) * 100) : 0;
+        }
       }
     }
     const { data: recs } = await supabase.from("recipes").select("name").limit(60);
-    setCtx({ client: c, target, planAvg, microCoverage, recipes: (recs || []).map((r) => r.name) });
+    setCtx({ client: c, target, planAvg, perDay, planInfo, microCoverage, recipes: (recs || []).map((r) => r.name) });
     // заредена последна конверсация
     const { data: conv } = await supabase.from("ai_conversations").select("id, messages").eq("client_id", id).order("updated_at", { ascending: false }).limit(1).maybeSingle();
     if (conv) { setConvId(conv.id); setMessages(conv.messages || []); }
@@ -74,12 +68,20 @@ export default function AIAssistant() {
     const c = ctx?.client, tg = ctx?.target;
     const lines = [
       "Ти си професионален асистент за НУТРИЦИОНИСТ (не за клиента) в софтуер за хранителни режими. Отговаряй на български, кратко и практично.",
-      "Изчисленията в приложението се правят от детерминистичен модул и базата — ти ПРЕДЛАГАШ, но промените се прилагат само след като нутриционистът ги въведе ръчно. Давай приблизителни калории/макроси за предложенията си.",
+      "Изчисленията в приложението се правят от детерминистичен модул и хранителната база — ти ПРЕДЛАГАШ, а промените се прилагат само след като нутриционистът ги въведе ръчно.",
+      "Числата в секциите ДАННИ по-долу са изчислени от приложението — цитирай ги точно и не ги преизчислявай. Когато даваш хранителни стойности за храни ИЗВЪН тези данни, изрично ги отбелязвай като „ориентировъчни (по памет)“ и напомняй, че точните стойности се получават след въвеждане в режима. Ако не знаеш стойност — кажи го, не я измисляй.",
+      "Ако те питат за нещо, за което нямаш данни в контекста (напр. конкретен ден без въведени продукти), кажи какво липсва, вместо да предполагаш.",
       "Не поставяй медицински диагнози и не представяй съветите като предписание.",
     ];
-    if (c) lines.push(`\nКЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ~${tg?.age}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
-    if (tg) lines.push(`ДНЕВНИ ЦЕЛИ (изчислени): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.`);
-    if (ctx?.planAvg) lines.push(`ТЕКУЩ РЕЖИМ — средно/ден: ${round(ctx.planAvg.kcal)} kcal, П ${round(ctx.planAvg.protein_g)} / В ${round(ctx.planAvg.carbs_g)} / М ${round(ctx.planAvg.fat_g)}, фибри ${round(ctx.planAvg.fiber_g)} g.`);
+    if (c) lines.push(`\nКЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ${c.birth_date ? tg?.age : "неизвестна"}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
+    if (tg) lines.push(`ДАННИ — ДНЕВНИ ЦЕЛИ (ориентир от приложението): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.${tg.assumed?.length ? ` ВНИМАНИЕ: в профила липсва ${tg.assumed.join(", ")} — целите са по стойности по подразбиране и не са индивидуални; кажи го на нутрициониста.` : ""}`);
+    if (ctx?.planAvg) {
+      const pi = ctx.planInfo;
+      lines.push(`ДАННИ — ТЕКУЩ РЕЖИМ (версия ${pi.version}, ${pi.status === "final" ? "финална" : "чернова"}; попълнени дни: ${pi.filledDays}/7) — средно/ден (÷7): ${round(ctx.planAvg.kcal)} kcal, П ${round(ctx.planAvg.protein_g)} / В ${round(ctx.planAvg.carbs_g)} / М ${round(ctx.planAvg.fat_g)}, фибри ${round(ctx.planAvg.fiber_g)} g.`);
+      lines.push("ПО ДНИ (изчислено от приложението):");
+      for (const d of ctx.perDay) lines.push(`- ${DAYS[d.weekday]}: ${d.meals.length ? `${round(d.kcal)} kcal, П ${round(d.protein_g)} / В ${round(d.carbs_g)} / М ${round(d.fat_g)}, фибри ${round(d.fiber_g)} g. ${d.meals.join(" | ")}` : "няма въведени продукти"}`);
+      if (pi.incompleteItems) lines.push(`ВНИМАНИЕ: ${pi.incompleteItems} продукта са с непълни макроданни — сумите са долна граница.`);
+    } else if (c) lines.push("ТЕКУЩ РЕЖИМ: няма въведени продукти.");
     if (ctx?.microCoverage != null) lines.push(`МИКРОНУТРИЕНТИ: само ${ctx.microCoverage}% от продуктите имат зададени микроданни — отчитай, че данните са НЕПЪЛНИ и не приемай липсата за нула.`);
     if (c?.allergies) lines.push(`АЛЕРГИИ/НЕПОНОСИМОСТИ: ${c.allergies}. НИКОГА не предлагай храни в конфликт с тях.`);
     if (c?.diet) lines.push(`ДИЕТА/РЕЖИМ: ${c.diet}.`);
@@ -91,25 +93,21 @@ export default function AIAssistant() {
   async function send(text) {
     const content = (text ?? input).trim();
     if (!content || busy) return;
-    if (!AI_ENDPOINT) { setMessages((m) => [...m, { role: "assistant", content: "AI не е конфигуриран (липсва прокси адрес)." }]); return; }
     setInput("");
     const next = [...messages, { role: "user", content }];
     setMessages(next); setBusy(true);
     try {
-      const res = await fetch(AI_ENDPOINT, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model: "claude-sonnet-4-6", max_tokens: 1024, system: buildSystem(), messages: next.map((m) => ({ role: m.role, content: m.content })) }),
-      });
-      const data = await res.json();
-      if (!res.ok || data.error) throw new Error(data?.error?.message || ("HTTP " + res.status));
-      const reply = (data.content || []).map((b) => b.text || "").join("").trim() || "(празен отговор)";
+      const { text, truncated } = await aiRequest({ system: buildSystem(), messages: trimHistory(next.filter((m) => !m.error)), maxTokens: 1500 });
+      const reply = (text || "(празен отговор)") + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
       const updated = [...next, { role: "assistant", content: reply }];
       setMessages(updated);
       // запис на разговора
-      if (convId) await supabase.from("ai_conversations").update({ messages: updated, updated_at: new Date().toISOString() }).eq("id", convId);
-      else { const { data: ins } = await supabase.from("ai_conversations").insert({ nutritionist_id: session.user.id, client_id: clientId || null, messages: updated }).select("id").single(); if (ins) setConvId(ins.id); }
+      const toSave = updated.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
+      if (convId) await supabase.from("ai_conversations").update({ messages: toSave, updated_at: new Date().toISOString() }).eq("id", convId);
+      else { const { data: ins } = await supabase.from("ai_conversations").insert({ nutritionist_id: session.user.id, client_id: clientId || null, messages: toSave }).select("id").single(); if (ins) setConvId(ins.id); }
     } catch (e) {
-      setMessages((m) => [...m, { role: "assistant", content: "⚠️ Грешка: " + e.message }]);
+      // грешките се показват, но НЕ се записват и не се пращат обратно към модела
+      setMessages((m) => [...m, { role: "assistant", content: "⚠️ " + e.message, error: true }]);
     } finally { setBusy(false); }
   }
 
@@ -119,11 +117,11 @@ export default function AIAssistant() {
         <h2 style={{ margin: 0, color: t.ink }}>AI асистент</h2>
         <Select value={clientId} onChange={pickClient} style={{ width: "auto", minWidth: 220 }}
           options={[{ value: "", label: "Без клиент (общи въпроси)" }, ...clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name || ""}` }))]} />
-        {messages.length > 0 && <button onClick={() => { setMessages([]); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer", fontSize: 13 }}>Изчисти</button>}
+        {messages.length > 0 && <button title="Започва нов разговор (старият остава записан)" onClick={() => { setMessages([]); setConvId(null); }} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer", fontSize: 13 }}>Нов разговор</button>}
       </div>
 
       <div style={{ fontSize: 12.5, color: t.muted, background: t.tealPale, borderRadius: 10, padding: "8px 12px" }}>
-        {ctx?.client ? `Контекст: клиент (${ctx.client.sex}, ~${ctx.target?.age} г.), цели ${round(ctx.target?.kcal)} kcal · П ${round(ctx.target?.protein_g)} г${ctx.planAvg ? ` · режим ~${round(ctx.planAvg.kcal)} kcal/ден` : ""}. Данните са минимизирани (без име/бележки).` : "Съветник за нутриционисти. Избери клиент за контекст (профил, цели, режим). Промените се прилагат само след твое потвърждение."}
+        {ctx?.client ? `Контекст: клиент (${ctx.client.sex === "female" ? "жена" : ctx.client.sex === "male" ? "мъж" : "пол ?"}${ctx.client.birth_date ? `, ${ctx.target?.age} г.` : ""}), цели ${round(ctx.target?.kcal)} kcal · П ${round(ctx.target?.protein_g)} г${ctx.planAvg ? ` · режим ~${round(ctx.planAvg.kcal)} kcal/ден` : ""}. Данните са минимизирани (без име/бележки).` : "Съветник за нутриционисти. Избери клиент за контекст (профил, цели, режим). Промените се прилагат само след твое потвърждение."}
       </div>
 
       <div style={{ overflowY: "auto", display: "grid", gap: 10, alignContent: "start", padding: "2px" }}>

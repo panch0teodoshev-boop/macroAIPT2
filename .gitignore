@@ -3,3 +3,5 @@ dist/
 .env
 .env.local
 .DS_Store
+dist-e2e/
+dist-e2e-main/

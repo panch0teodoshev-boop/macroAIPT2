@@ -1,12 +1,10 @@
 // Експорт на седмичен режим: PDF (чрез печат) и Excel (.xlsx), без външни зависимости.
 import { round } from "./nutrition.mjs";
+import { MACRO_KEYS as MK, zero, itemTotals as itemTot, addInto, weekSummary } from "./planMath.mjs";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
-const MK = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g"];
-const zero = () => ({ kcal: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0 });
-function itemTot(it) { const q = +it.qty || 0, s = it.snapshot || {}, f = it.unit === "serving" || it.unit === "piece" ? q : q / 100; const o = zero(); for (const k of MK) o[k] = (+s[k] || 0) * f; return o; }
-const addInto = (a, b) => { for (const k of MK) a[k] += b[k] || 0; return a; };
-const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+const GOAL_BG = { reduction: "редукция", maintenance: "поддръжка", muscle_gain: "мускулна маса", recomposition: "рекомпозиция" };
 const uName = (it) => it.foods?.name_bg || it.recipes?.name || it.snapshot?.name || "—";
 const uLabel = (u) => (u === "serving" ? "порции" : u === "piece" ? "бр" : "г");
 
@@ -21,7 +19,7 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
       const mt = zero();
       const rows = (m.plan_meal_items || []).map((it) => {
         const tt = itemTot(it); addInto(mt, tt);
-        return `<tr><td>${esc(uName(it))}</td><td class="r">${round(it.qty)} ${uLabel(it.unit)}</td><td class="r">${round(tt.kcal)}</td><td class="r">${round(tt.protein_g)}</td><td class="r">${round(tt.carbs_g)}</td><td class="r">${round(tt.fat_g)}</td></tr>`;
+        return `<tr><td>${esc(uName(it))}</td><td class="r">${round(it.qty, 1)} ${uLabel(it.unit)}</td><td class="r">${round(tt.kcal)}</td><td class="r">${round(tt.protein_g)}</td><td class="r">${round(tt.carbs_g)}</td><td class="r">${round(tt.fat_g)}</td></tr>`;
       }).join("");
       addInto(dayTot, mt);
       return `<tr class="meal"><td colspan="2">${esc(m.name)}</td><td class="r">${round(mt.kcal)}</td><td class="r">${round(mt.protein_g)}</td><td class="r">${round(mt.carbs_g)}</td><td class="r">${round(mt.fat_g)}</td></tr>${rows}`;
@@ -33,6 +31,9 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
   }).join("");
 
   const avg = Object.fromEntries(MK.map((k) => [k, week[k] / 7]));
+  const ws = weekSummary(tree);
+  const partial = ws.filledDays > 0 && ws.filledDays < 7 ? `<p class="foot">Попълнени са ${ws.filledDays} от 7 дни; „Средно/ден" е общото за седмицата, разделено на 7.</p>` : "";
+  const incomplete = ws.incompleteItems > 0 ? `<p class="foot">Внимание: ${ws.incompleteItems} продукта нямат пълни данни за калории/макроси и не са изцяло включени в сумите.</p>` : "";
   const tgRow = target ? `<p class="goal">Дневна цел: <b>${round(target.kcal)} kcal</b> · Протеин ${round(target.protein_g)} г · Въглехидрати ${round(target.carbs_g)} г · Мазнини ${round(target.fat_g)} г</p>` : "";
 
   const html = `<!doctype html><html lang="bg"><head><meta charset="utf-8"><title>Режим — ${esc(clientName(client))}</title>
@@ -46,7 +47,7 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
     @media print{body{margin:12mm} h3{page-break-after:avoid} table{page-break-inside:avoid}}
   </style></head><body>
     <h1>Хранителен режим</h1>
-    <p class="sub">${esc(clientName(client))}${client?.main_goal ? " · цел: " + esc(client.main_goal) : ""} · изготвен от ${esc(nutritionist || "")} · ${new Date().toLocaleDateString("bg-BG")}</p>
+    <p class="sub">${esc(clientName(client))}${client?.main_goal ? " · цел: " + esc(GOAL_BG[client.main_goal] || client.main_goal) : ""} · изготвен от ${esc(nutritionist || "")} · ${new Date().toLocaleDateString("bg-BG")}</p>
     ${tgRow}
     ${dayBlocks}
     <h3>Седмично обобщение</h3>
@@ -57,13 +58,14 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
       <tr><td>Мазнини (г)</td><td class="r">${round(avg.fat_g)}</td><td class="r">${round(week.fat_g)}</td></tr>
       <tr><td>Фибри (г)</td><td class="r">${round(avg.fiber_g)}</td><td class="r">${round(week.fiber_g)}</td></tr>
     </tbody></table>
+    ${partial}${incomplete}
     <p class="foot">Стойностите са ориентировъчни, изчислени от хранителната база на приложението. Не представляват медицинско предписание. ProNutrition.</p>
   </body></html>`;
 
   const w = window.open("", "_blank");
   if (!w) { alert("Разреши изскачащите прозорци, за да отпечаташ PDF."); return; }
-  w.document.write(html); w.document.close();
-  w.onload = () => { w.focus(); w.print(); };
+  w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => w.print(), 350); // onload не се задейства надеждно след document.write във всички браузъри
 }
 
 /* ---------------- Excel (.xlsx, минимален OOXML) ---------------- */
@@ -73,11 +75,11 @@ export function exportPlanExcel({ tree, client }) {
     (d.plan_meals || []).forEach((m) => {
       (m.plan_meal_items || []).forEach((it) => {
         const tt = itemTot(it);
-        rows.push([DAYS[d.weekday], m.name, uName(it), round(it.qty), uLabel(it.unit), round(tt.kcal), round(tt.protein_g, 1), round(tt.carbs_g, 1), round(tt.fat_g, 1), round(tt.fiber_g, 1)]);
+        rows.push([DAYS[d.weekday], m.name, uName(it), round(it.qty, 2), uLabel(it.unit), round(tt.kcal), round(tt.protein_g, 1), round(tt.carbs_g, 1), round(tt.fat_g, 1), round(tt.fiber_g, 1)]);
       });
     });
   });
-  downloadXlsx(`rezhim_${clientName(client).replace(/\s+/g, "_")}.xlsx`, "Режим", rows);
+  downloadXlsx(`rezhim_${clientName(client).replace(/[\\/:*?"<>|\s]+/g, "_")}.xlsx`, "Режим", rows);
 }
 
 // Минимален .xlsx генератор (ZIP + OOXML), без библиотеки.
