@@ -30,7 +30,7 @@ export default function AIAssistant() {
 
   useEffect(() => { supabase.from("clients").select("id, first_name, last_name").eq("archived", false).order("first_name").then(({ data }) => setClients(data || [])); }, []);
 
-  async function pickClient(id) {
+  async function pickClient(id, fresh = false) {
     setClientId(id); setMessages([]); setConvId(null); setCtx(null);
     if (!id) return;
     const { data: c } = await supabase.from("clients").select("*").eq("id", id).single();
@@ -58,14 +58,17 @@ export default function AIAssistant() {
       }
     }
     const { data: recs } = await supabase.from("recipes").select("name").limit(60);
-    setCtx({ client: c, target, planAvg, perDay, planInfo, microCoverage, recipes: (recs || []).map((r) => r.name) });
+    const newCtx = { client: c, target, planAvg, perDay, planInfo, microCoverage, recipes: (recs || []).map((r) => r.name) };
+    setCtx(newCtx);
+    if (fresh) return newCtx; // автоматично избран клиент → нов разговор
     // заредена последна конверсация
     const { data: conv } = await supabase.from("ai_conversations").select("id, messages").eq("client_id", id).order("updated_at", { ascending: false }).limit(1).maybeSingle();
     if (conv) { setConvId(conv.id); setMessages(conv.messages || []); }
+    return newCtx;
   }
 
-  const buildSystem = () => {
-    const c = ctx?.client, tg = ctx?.target;
+  const buildSystem = (cx = ctx) => {
+    const c = cx?.client, tg = cx?.target;
     const lines = [
       "Ти си професионален асистент за НУТРИЦИОНИСТ (не за клиента) в софтуер за хранителни режими. Отговаряй на български, кратко и практично.",
       "Изчисленията в приложението се правят от детерминистичен модул и хранителната база — ти ПРЕДЛАГАШ, а промените се прилагат само след като нутриционистът ги въведе ръчно.",
@@ -76,24 +79,24 @@ export default function AIAssistant() {
     if (c) lines.push("\nВ момента нутриционистът е избрал ЕДИН клиент и всички секции по-долу са НЕГОВИТЕ данни, подадени от приложението. Името е скрито нарочно (минимизиране на данните) и в съобщенията се заменя с „[клиентът]“. Когато нутриционистът пише „клиента“, „режима му“, „[клиентът]“ или лично име, той има предвид точно този клиент — работи директно с данните по-долу и не казвай, че нямаш достъп до профила.");
     if (c) lines.push(`КЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ${c.birth_date ? tg?.age : "неизвестна"}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
     if (tg) lines.push(`ДАННИ — ДНЕВНИ ЦЕЛИ (ориентир от приложението): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.${tg.assumed?.length ? ` ВНИМАНИЕ: в профила липсва ${tg.assumed.join(", ")} — целите са по стойности по подразбиране и не са индивидуални; кажи го на нутрициониста.` : ""}`);
-    if (ctx?.planAvg) {
-      const pi = ctx.planInfo;
-      lines.push(`ДАННИ — ТЕКУЩ РЕЖИМ (версия ${pi.version}, ${pi.status === "final" ? "финална" : "чернова"}; попълнени дни: ${pi.filledDays}/7) — средно/ден (÷7): ${round(ctx.planAvg.kcal)} kcal, П ${round(ctx.planAvg.protein_g)} / В ${round(ctx.planAvg.carbs_g)} / М ${round(ctx.planAvg.fat_g)}, фибри ${round(ctx.planAvg.fiber_g)} g.`);
+    if (cx?.planAvg) {
+      const pi = cx.planInfo;
+      lines.push(`ДАННИ — ТЕКУЩ РЕЖИМ (версия ${pi.version}, ${pi.status === "final" ? "финална" : "чернова"}; попълнени дни: ${pi.filledDays}/7) — средно/ден (÷7): ${round(cx.planAvg.kcal)} kcal, П ${round(cx.planAvg.protein_g)} / В ${round(cx.planAvg.carbs_g)} / М ${round(cx.planAvg.fat_g)}, фибри ${round(cx.planAvg.fiber_g)} g.`);
       lines.push("ПО ДНИ (изчислено от приложението):");
-      for (const d of ctx.perDay) lines.push(`- ${DAYS[d.weekday]}: ${d.meals.length ? `${round(d.kcal)} kcal, П ${round(d.protein_g)} / В ${round(d.carbs_g)} / М ${round(d.fat_g)}, фибри ${round(d.fiber_g)} g. ${d.meals.join(" | ")}` : "няма въведени продукти"}`);
+      for (const d of cx.perDay) lines.push(`- ${DAYS[d.weekday]}: ${d.meals.length ? `${round(d.kcal)} kcal, П ${round(d.protein_g)} / В ${round(d.carbs_g)} / М ${round(d.fat_g)}, фибри ${round(d.fiber_g)} g. ${d.meals.join(" | ")}` : "няма въведени продукти"}`);
       if (pi.incompleteItems) lines.push(`ВНИМАНИЕ: ${pi.incompleteItems} продукта са с непълни макроданни — сумите са долна граница.`);
     } else if (c) lines.push("ТЕКУЩ РЕЖИМ: няма въведени продукти.");
-    if (ctx?.microCoverage != null) lines.push(`МИКРОНУТРИЕНТИ: само ${ctx.microCoverage}% от продуктите имат зададени микроданни — отчитай, че данните са НЕПЪЛНИ и не приемай липсата за нула.`);
+    if (cx?.microCoverage != null) lines.push(`МИКРОНУТРИЕНТИ: само ${cx.microCoverage}% от продуктите имат зададени микроданни — отчитай, че данните са НЕПЪЛНИ и не приемай липсата за нула.`);
     if (c?.allergies) lines.push(`АЛЕРГИИ/НЕПОНОСИМОСТИ: ${c.allergies}. НИКОГА не предлагай храни в конфликт с тях.`);
     if (c?.diet) lines.push(`ДИЕТА/РЕЖИМ: ${c.diet}.`);
     if (c?.excluded_foods) lines.push(`ИЗКЛЮЧЕНИ ХРАНИ: ${c.excluded_foods}.`);
-    if (ctx?.recipes?.length) lines.push(`НАЛИЧНИ РЕЦЕПТИ (може да ги ползваш в предложения): ${ctx.recipes.join(", ")}.`);
+    if (cx?.recipes?.length) lines.push(`НАЛИЧНИ РЕЦЕПТИ (може да ги ползваш в предложения): ${cx.recipes.join(", ")}.`);
     return lines.join("\n");
   };
 
   // Името на клиента не напуска приложението: заменя се в съобщенията към модела.
-  const redactName = (txt) => {
-    const c = ctx?.client; if (!c || typeof txt !== "string") return txt;
+  const redactName = (txt, cx = ctx) => {
+    const c = cx?.client; if (!c || typeof txt !== "string") return txt;
     const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const f = (c.first_name || "").trim(), l = (c.last_name || "").trim();
     let out = txt;
@@ -105,18 +108,26 @@ export default function AIAssistant() {
   async function send(text) {
     const content = (text ?? input).trim();
     if (!content || busy) return;
-    setInput("");
-    const next = [...messages, { role: "user", content }];
-    setMessages(next); setBusy(true);
+    setInput(""); setBusy(true);
+    // Без избран клиент, но с име на точно един клиент във въпроса → зареждаме неговия контекст,
+    // вместо да пращаме името към модела без данни.
+    let cx = ctx, cid = clientId, base = messages, conv = convId;
+    if (!clientId) {
+      const lc = content.toLowerCase();
+      const hits = clients.filter((c) => c.last_name && lc.includes(`${c.first_name} ${c.last_name}`.toLowerCase()));
+      if (hits.length === 1) { cid = hits[0].id; cx = await pickClient(cid, true); base = []; conv = null; }
+    }
+    const next = [...base, { role: "user", content }];
+    setMessages(next);
     try {
-      const { text, truncated } = await aiRequest({ system: buildSystem(), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content) })), maxTokens: 1500 });
+      const { text, truncated } = await aiRequest({ system: buildSystem(cx), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content, cx) })), maxTokens: 1500 });
       const reply = (text || "(празен отговор)") + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
       const updated = [...next, { role: "assistant", content: reply }];
       setMessages(updated);
       // запис на разговора
       const toSave = updated.filter((m) => !m.error).map((m) => ({ role: m.role, content: m.content }));
-      if (convId) await supabase.from("ai_conversations").update({ messages: toSave, updated_at: new Date().toISOString() }).eq("id", convId);
-      else { const { data: ins } = await supabase.from("ai_conversations").insert({ nutritionist_id: session.user.id, client_id: clientId || null, messages: toSave }).select("id").single(); if (ins) setConvId(ins.id); }
+      if (conv) await supabase.from("ai_conversations").update({ messages: toSave, updated_at: new Date().toISOString() }).eq("id", conv);
+      else { const { data: ins } = await supabase.from("ai_conversations").insert({ nutritionist_id: session.user.id, client_id: cid || null, messages: toSave }).select("id").single(); if (ins) setConvId(ins.id); }
     } catch (e) {
       // грешките се показват, но НЕ се записват и не се пращат обратно към модела
       setMessages((m) => [...m, { role: "assistant", content: "⚠️ " + e.message, error: true }]);
