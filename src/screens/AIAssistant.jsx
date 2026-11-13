@@ -73,7 +73,8 @@ export default function AIAssistant() {
       "Ако те питат за нещо, за което нямаш данни в контекста (напр. конкретен ден без въведени продукти), кажи какво липсва, вместо да предполагаш.",
       "Не поставяй медицински диагнози и не представяй съветите като предписание.",
     ];
-    if (c) lines.push(`\nКЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ${c.birth_date ? tg?.age : "неизвестна"}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
+    if (c) lines.push("\nВ момента нутриционистът е избрал ЕДИН клиент и всички секции по-долу са НЕГОВИТЕ данни, подадени от приложението. Името е скрито нарочно (минимизиране на данните) и в съобщенията се заменя с „[клиентът]“. Когато нутриционистът пише „клиента“, „режима му“, „[клиентът]“ или лично име, той има предвид точно този клиент — работи директно с данните по-долу и не казвай, че нямаш достъп до профила.");
+    if (c) lines.push(`КЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ${c.birth_date ? tg?.age : "неизвестна"}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
     if (tg) lines.push(`ДАННИ — ДНЕВНИ ЦЕЛИ (ориентир от приложението): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.${tg.assumed?.length ? ` ВНИМАНИЕ: в профила липсва ${tg.assumed.join(", ")} — целите са по стойности по подразбиране и не са индивидуални; кажи го на нутрициониста.` : ""}`);
     if (ctx?.planAvg) {
       const pi = ctx.planInfo;
@@ -90,6 +91,17 @@ export default function AIAssistant() {
     return lines.join("\n");
   };
 
+  // Името на клиента не напуска приложението: заменя се в съобщенията към модела.
+  const redactName = (txt) => {
+    const c = ctx?.client; if (!c || typeof txt !== "string") return txt;
+    const esc = (x) => x.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const f = (c.first_name || "").trim(), l = (c.last_name || "").trim();
+    let out = txt;
+    if (f && l) out = out.replace(new RegExp(`${esc(f)}\\s+${esc(l)}|${esc(l)}\\s+${esc(f)}`, "gi"), "[клиентът]");
+    for (const n of [l, f]) if (n.length >= 3) out = out.replace(new RegExp(`(?<![\\p{L}])${esc(n)}(?![\\p{L}])`, "giu"), "[клиентът]");
+    return out;
+  };
+
   async function send(text) {
     const content = (text ?? input).trim();
     if (!content || busy) return;
@@ -97,7 +109,7 @@ export default function AIAssistant() {
     const next = [...messages, { role: "user", content }];
     setMessages(next); setBusy(true);
     try {
-      const { text, truncated } = await aiRequest({ system: buildSystem(), messages: trimHistory(next.filter((m) => !m.error)), maxTokens: 1500 });
+      const { text, truncated } = await aiRequest({ system: buildSystem(), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content) })), maxTokens: 1500 });
       const reply = (text || "(празен отговор)") + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
       const updated = [...next, { role: "assistant", content: reply }];
       setMessages(updated);
