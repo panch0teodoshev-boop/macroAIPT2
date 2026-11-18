@@ -486,6 +486,9 @@ test("AI асистент: минимизиран контекст с дневн
   assert.match(body.system, /Понеделник: 165 kcal, П 31/, "реалните дневни суми са в контекста");
   assert.match(body.system, /Вторник: няма въведени продукти/);
   assert.match(body.system, /АЛЕРГИИ\/НЕПОНОСИМОСТИ: ядки/);
+  assert.match(body.system, /ХРАНИТЕЛНА БАЗА НА ПРИЛОЖЕНИЕТО[\s\S]*Пилешко филе: 165 kcal, П 31, В 0, М 3\.6/, "AI смята по базата на приложението");
+  assert.equal(body.system.includes("Непълна храна"), false, "храни с липсващи макроси не се подават");
+  assert.match(body.system, /СЪСТАВИ го/);
   await page.waitForFunction(() => true);
   assert.equal(be.db.ai_conversations.length, 1);
   // грешка от услугата → показва се, но не влиза в записания разговор
