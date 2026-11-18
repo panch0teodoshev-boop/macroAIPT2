@@ -380,6 +380,35 @@ test("цел от калкулатора: запис към режима, пла
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("сравнение на версии: суми, разлика и списък с промени по дни", async () => {
+  const { page, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  assert.equal(await page.getByRole("button", { name: "Сравни версии" }).count(), 0, "при една версия бутонът липсва");
+  await addFood(page, 0, "Пилешко филе");                       // v1: пиле 100 g (165 kcal) в понеделник
+  await page.locator("select", { hasText: "+ Нова версия…" }).selectOption({ label: "Дублирай текущата" });
+  await page.getByText("v2 · чернова").waitFor({ state: "attached" });
+  const qty = page.getByLabel("Количество за Пилешко филе"); await qty.fill("200"); await qty.blur();
+  await page.getByText(/Общо за деня: 330 kcal/).waitFor();
+  await addFood(page, 1, "Ориз");                                 // v2: пиле 200 g + ориз 100 g = 460 kcal
+  await page.getByText(/Общо за деня: 460 kcal/).waitFor();
+  await page.getByRole("button", { name: "Сравни версии" }).click();
+  await page.getByText("Какво се променя от v1 към v2").waitFor();
+  const dlg = page.locator("h3", { hasText: "Сравнение на версии" }).locator("xpath=..");
+  const row = async (txt) => (await dlg.locator("tr", { hasText: txt }).first().innerText()).replace(/\s+/g, " ");
+  assert.match(await row("Понеделник"), /Понеделник 165 460 \+295 2/);
+  assert.match(await row("Вторник"), /Вторник 0 0 0 —/);
+  // средно/ден ÷7: 165/7 = 23.6 → 24; 460/7 = 65.7 → 66; разлика 42
+  assert.match(await row("Разлика"), /Разлика \+42/);
+  await dlg.getByText("+ Ориз 100 г").waitFor();
+  await dlg.getByText("Пилешко филе: 100 г → 200 г").waitFor();
+  // обръщане на посоката
+  await dlg.getByLabel("Версия A").selectOption({ label: "v2 · чернова" });
+  await dlg.getByLabel("Версия B").selectOption({ label: "v1 · чернова" });
+  await dlg.getByText("Какво се променя от v2 към v1").waitFor();
+  await dlg.getByText("− Ориз 100 г").waitFor();
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("цел: без записана цел планерът казва, че е по формула", async () => {
   const { page, context } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);

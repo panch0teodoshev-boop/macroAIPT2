@@ -68,6 +68,43 @@ export function weekSummary(tree) {
   return { total, avg: div(7), avgFilled: div(filledDays), filledDays, items, incompleteItems };
 }
 
+/**
+ * Сравнение на две версии на режим (A → B). За всеки от 7-те дни: дневните суми на двете и
+ * промените по продукти. Продуктите се сравняват по име + мерна единица, сумирано за деня
+ * (преместване между хранения в същия ден не е промяна в храненето на клиента за деня).
+ */
+export function compareTrees(treeA, treeB) {
+  const byWd = (tree) => { const m = new Map(); (tree || []).forEach((d) => { if (!m.has(d.weekday)) m.set(d.weekday, d); }); return m; };
+  const qtyMap = (day) => {
+    const m = new Map();
+    (day?.plan_meals || []).forEach((meal) => (meal.plan_meal_items || []).forEach((it) => {
+      const name = it.snapshot?.name || it.foods?.name_bg || it.recipes?.name || "?";
+      const key = `${name}\u0000${it.unit}`;
+      const q = val(it.qty);
+      const cur = m.get(key) || { name, unit: it.unit, qty: 0 };
+      cur.qty += isFinite(q) && q > 0 ? q : 0;
+      m.set(key, cur);
+    }));
+    return m;
+  };
+  const A = byWd(treeA), B = byWd(treeB);
+  const days = [];
+  for (let wd = 0; wd < 7; wd++) {
+    const da = A.get(wd), db = B.get(wd);
+    const qa = qtyMap(da), qb = qtyMap(db);
+    const changes = [];
+    for (const key of new Set([...qa.keys(), ...qb.keys()])) {
+      const x = qa.get(key), y = qb.get(key);
+      const qtyA = x?.qty || 0, qtyB = y?.qty || 0;
+      if (Math.abs(qtyA - qtyB) < 1e-9) continue;
+      changes.push({ name: (x || y).name, unit: (x || y).unit, qtyA, qtyB, kind: qtyA === 0 ? "added" : qtyB === 0 ? "removed" : "changed" });
+    }
+    changes.sort((p, q) => p.name.localeCompare(q.name, "bg"));
+    days.push({ weekday: wd, a: dayTotals(da), b: dayTotals(db), changes });
+  }
+  return { days, weekA: weekSummary(treeA), weekB: weekSummary(treeB), changedDays: days.filter((d) => d.changes.length).length };
+}
+
 /** Рецепта → стойности за 1 порция. Порциите могат да са дробни (напр. 0.5); ≤0 или липсва → 1. */
 export function recipePerServing(recipe) {
   const tot = zero();

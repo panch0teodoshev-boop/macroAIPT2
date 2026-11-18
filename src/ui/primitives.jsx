@@ -34,9 +34,9 @@ export function Field({ label, children, hint }) {
 
 export function Input(props) { return <input {...props} style={{ ...inputStyle, ...props.style }} />; }
 
-export function Select({ value, onChange, options, style }) {
+export function Select({ value, onChange, options, style, ...rest }) {
   return (
-    <select value={value} onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, ...style }}>
+    <select {...rest} value={value} onChange={(e) => onChange(e.target.value)} style={{ ...inputStyle, ...style }}>
       {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
     </select>
   );

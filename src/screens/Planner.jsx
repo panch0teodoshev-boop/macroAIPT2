@@ -5,7 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { round } from "../lib/nutrition.mjs";
-import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, parseQty } from "../lib/planMath.mjs";
+import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
 
@@ -30,6 +30,7 @@ export default function Planner() {
   const [recipes, setRecipes] = useState([]);
   const [showShop, setShowShop] = useState(false);
   const [showMicro, setShowMicro] = useState(false);
+  const [showCompare, setShowCompare] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
@@ -319,6 +320,7 @@ export default function Planner() {
           )}
           <Select value="" onChange={(m) => m && newVersion(m)} style={{ width: "auto" }}
             options={[{ value: "", label: "+ Нова версия…" }, { value: "duplicate", label: "Дублирай текущата" }, { value: "blank", label: "Празна (7 дни)" }]} />
+          {versions.length > 1 && <Button variant="ghost" onClick={() => setShowCompare(true)}>Сравни версии</Button>}
           {versions.length > 1 && <Button variant="danger" onClick={deleteVersion} style={{ padding: "8px 12px" }}>Изтрий версия</Button>}
         </Card>
       )}
@@ -434,6 +436,7 @@ export default function Planner() {
         await reload();
       })} />}
       {showShop && <ShoppingList tree={tree} onClose={() => setShowShop(false)} />}
+      {showCompare && <CompareVersions versions={versions} current={version} client={client} onClose={() => setShowCompare(false)} />}
       {showMicro && <MicroAnalysis tree={tree} client={client} onClose={() => setShowMicro(false)} />}
       {showAI && <AIGenerate foods={foods} client={client} target={target} dayIdx={dayIdx} onApply={applyAIPlan} onClose={() => setShowAI(false)} />}
     </div>
@@ -686,10 +689,107 @@ function StatusBadge({ status }) {
   return <span style={{ background: s.bg, color: s.fg, borderRadius: 20, padding: "3px 11px", fontSize: 11.5, fontWeight: 700 }}>{s.label}</span>;
 }
 
-function Modal({ title, children, onClose }) {
+const UNIT_SHORT = { "100g": "г", piece: "бр", serving: "порц." };
+const fmtQty = (q, unit) => `${round(q, 1)} ${UNIT_SHORT[unit] || unit}`;
+const vLabel = (v) => `v${v.version}${v.status === "final" ? " · финал" : v.status === "archived" ? " · архив" : " · чернова"}`;
+
+async function fetchTree(versionId) {
+  const { data, error } = await supabase.from("plan_days")
+    .select("id, weekday, plan_meals(id, name, position, plan_meal_items(id, qty, unit, snapshot, foods(name_bg), recipes(name)))")
+    .eq("version_id", versionId).order("weekday");
+  if (error) throw error;
+  return data || [];
+}
+
+function CompareVersions({ versions, current, client, onClose }) {
+  const others = versions.filter((v) => v.id !== current.id);
+  const [aId, setAId] = useState(others[0]?.id || current.id); // по-старата/другата версия
+  const [bId, setBId] = useState(current.id);                  // текущата
+  const [res, setRes] = useState(null);
+  const [err, setErr] = useState("");
+  const A = versions.find((v) => v.id === aId), B = versions.find((v) => v.id === bId);
+
+  useEffect(() => {
+    let alive = true; setRes(null); setErr("");
+    Promise.all([fetchTree(aId), fetchTree(bId)])
+      .then(([ta, tb]) => { if (alive) setRes(compareTrees(ta, tb)); })
+      .catch((e) => { if (alive) setErr("Версиите не можаха да се заредят: " + e.message); });
+    return () => { alive = false; };
+  }, [aId, bId]);
+
+  const tA = effectiveTarget(A?.targets, client), tB = effectiveTarget(B?.targets, client);
+  const K = [["kcal", "kcal"], ["protein_g", "Прот."], ["carbs_g", "Въгл."], ["fat_g", "Мазн."]];
+  const delta = (d) => <span style={{ color: Math.abs(d) < 0.5 ? t.muted : d > 0 ? t.warn : t.good, fontWeight: 700 }}>{d >= 0.5 ? "+" : ""}{round(d)}</span>;
+  const sameTarget = tA && tB && K.every(([k]) => Math.round(tA[k]) === Math.round(tB[k]));
+
+  return (
+    <Modal title="Сравнение на версии" onClose={onClose} wide>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginBottom: 12 }}>
+        <Select value={aId} onChange={setAId} style={{ width: "auto" }} aria-label="Версия A" options={versions.map((v) => ({ value: v.id, label: vLabel(v) }))} />
+        <span style={{ color: t.muted, fontWeight: 700 }}>→</span>
+        <Select value={bId} onChange={setBId} style={{ width: "auto" }} aria-label="Версия B" options={versions.map((v) => ({ value: v.id, label: vLabel(v) }))} />
+        <span style={{ fontSize: 12, color: t.muted }}>Разликата е „вдясно минус вляво".</span>
+      </div>
+      {aId === bId && <div style={{ fontSize: 13, color: t.muted, marginBottom: 10 }}>Избрана е една и съща версия от двете страни.</div>}
+      {err && <div role="alert" style={{ color: t.warn, fontSize: 13 }}>{err}</div>}
+      {!res && !err && <div style={{ color: t.muted }}>Зареждане…</div>}
+      {res && A && B && (
+        <div style={{ display: "grid", gap: 14 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 460, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: t.coral, color: "#fff" }}><th style={{ ...th, textAlign: "left" }}>Средно/ден (÷7)</th>{K.map(([, l]) => <th key={l} style={th}>{l}</th>)}</tr></thead>
+              <tbody>
+                <tr><td style={{ ...td, textAlign: "left", fontWeight: 700 }}>v{A.version}</td>{K.map(([k]) => <td key={k} style={td}>{round(res.weekA.avg[k])}</td>)}</tr>
+                <tr><td style={{ ...td, textAlign: "left", fontWeight: 700 }}>v{B.version}</td>{K.map(([k]) => <td key={k} style={td}>{round(res.weekB.avg[k])}</td>)}</tr>
+                <tr style={{ background: t.tealPale }}><td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Разлика</td>{K.map(([k]) => <td key={k} style={td}>{delta(res.weekB.avg[k] - res.weekA.avg[k])}</td>)}</tr>
+              </tbody>
+            </table>
+          </div>
+          {tA && tB && <div style={{ fontSize: 12.5, color: sameTarget ? t.muted : t.coralDark }}>
+            {sameTarget
+              ? `Целта е еднаква: ${round(tB.kcal)} kcal · П ${round(tB.protein_g)} · В ${round(tB.carbs_g)} · М ${round(tB.fat_g)}${tB.source === "saved" ? " (от калкулатора)" : " (по формула)"}.`
+              : `Целите се различават: v${A.version} — ${round(tA.kcal)} kcal · П ${round(tA.protein_g)}; v${B.version} — ${round(tB.kcal)} kcal · П ${round(tB.protein_g)}.`}
+          </div>}
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 420, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: t.tealDark, color: "#fff" }}><th style={{ ...th, textAlign: "left" }}>Ден</th><th style={th}>v{A.version} kcal</th><th style={th}>v{B.version} kcal</th><th style={th}>Разлика</th><th style={th}>Промени</th></tr></thead>
+              <tbody>{res.days.map((d) => (
+                <tr key={d.weekday}><td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{DAYS[d.weekday]}</td><td style={td}>{round(d.a.kcal)}</td><td style={td}>{round(d.b.kcal)}</td><td style={td}>{delta(d.b.kcal - d.a.kcal)}</td><td style={{ ...td, color: d.changes.length ? t.ink : t.muted }}>{d.changes.length || "—"}</td></tr>
+              ))}</tbody>
+            </table>
+          </div>
+          {res.changedDays === 0 ? (
+            <div style={{ fontSize: 13, color: t.muted }}>Двете версии са с едни и същи продукти и количества.</div>
+          ) : (
+            <div style={{ display: "grid", gap: 10 }}>
+              <div style={{ fontWeight: 700, color: t.ink, fontSize: 14 }}>Какво се променя от v{A.version} към v{B.version}</div>
+              {res.days.filter((d) => d.changes.length).map((d) => (
+                <div key={d.weekday}>
+                  <div style={{ fontWeight: 700, color: t.tealDark, fontSize: 13, marginBottom: 4 }}>{DAYS[d.weekday]}</div>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 13, color: t.ink, lineHeight: 1.6 }}>
+                    {d.changes.map((c) => (
+                      <li key={c.name + c.unit}>
+                        {c.kind === "added" && <><b style={{ color: t.good }}>+</b> {c.name} {fmtQty(c.qtyB, c.unit)}</>}
+                        {c.kind === "removed" && <><b style={{ color: t.warn }}>−</b> {c.name} {fmtQty(c.qtyA, c.unit)}</>}
+                        {c.kind === "changed" && <>{c.name}: {fmtQty(c.qtyA, c.unit)} → {fmtQty(c.qtyB, c.unit)}</>}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+              <div style={{ fontSize: 11.5, color: t.muted }}>Сравнява се количеството на всеки продукт за деня; преместване между хранения в същия ден не се отчита като промяна.</div>
+            </div>
+          )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function Modal({ title, children, onClose, wide }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(14,48,47,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 }} onClick={onClose}>
-      <Card style={{ width: "100%", maxWidth: 480, maxHeight: "92vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
+      <Card style={{ width: "100%", maxWidth: wide ? 860 : 480, maxHeight: "92vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
         <h3 style={{ margin: "0 0 12px", color: t.ink }}>{title}</h3>{children}
       </Card>
     </div>

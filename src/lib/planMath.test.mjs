@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   itemFactor, itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing,
-  servingsOf, microSummary, ageFromBirthDate, clientTarget, parseQty, savedTarget, effectiveTarget,
+  servingsOf, microSummary, ageFromBirthDate, clientTarget, parseQty, savedTarget, effectiveTarget, compareTrees,
 } from "./planMath.mjs";
 import { round, calcMacros, calcBMR, bmrHarrisBenedict, bmrMifflin, calcTDEE, calcEnergyTarget, ACTIVITY_FACTORS, KCAL_PER_G } from "./nutrition.mjs";
 
@@ -187,3 +187,31 @@ test("записана цел от низове ('2200.5') се чете кат�
   assert.equal(t.kcal, 2200.5); assert.equal(t.fat_g, 0);
 });
 test("без клиент и без записана цел → null", () => { assert.equal(effectiveTarget({}, null, NOW), null); });
+
+// ---------- сравнение на версии ----------
+const ck = { ...chicken, name: "Пиле" }, rc = { ...rice, name: "Ориз" };
+const tree = (days) => days.map(([weekday, meals]) => ({ weekday, plan_meals: meals.map((items, i) => ({ name: "Х" + i, position: i, plan_meal_items: items })) }));
+test("сравнение: добавен, премахнат и променен продукт; дневни суми", () => {
+  const A = tree([[0, [[item(ck, 200)], [item(rc, 100)]]], [1, [[item(ck, 100)]]]]);
+  const B = tree([[0, [[item(ck, 250)]]], [1, [[item(ck, 100)], [item(rc, 150)]]]]);
+  const r = compareTrees(A, B);
+  near(r.days[0].a.kcal, 2 * 165 + 130); near(r.days[0].b.kcal, 2.5 * 165);   // 460 → 412.5
+  assert.deepEqual(r.days[0].changes.map((c) => [c.name, c.kind, c.qtyA, c.qtyB]), [["Ориз", "removed", 100, 0], ["Пиле", "changed", 200, 250]]);
+  assert.deepEqual(r.days[1].changes.map((c) => [c.name, c.kind, c.qtyA, c.qtyB]), [["Ориз", "added", 0, 150]]);
+  assert.equal(r.changedDays, 2); assert.equal(r.days[2].changes.length, 0);
+  near(r.weekB.total.kcal, 412.5 + 165 + 195);
+});
+test("сравнение: преместване между хранения в същия ден не е промяна; количества като низове", () => {
+  const A = tree([[3, [[item(ck, "150.00")], []]]]);
+  const B = tree([[3, [[], [item(ck, 150)]]]]);
+  assert.equal(compareTrees(A, B).changedDays, 0);
+});
+test("сравнение: едно и също име, различна мерна единица → отделни редове", () => {
+  const A = tree([[0, [[item({ ...egg, name: "Яйце" }, 2, "piece")]]]]);
+  const B = tree([[0, [[item({ ...egg, name: "Яйце" }, 100, "100g")]]]]);
+  assert.equal(compareTrees(A, B).days[0].changes.length, 2);
+});
+test("сравнение: празни версии → без промени и нули", () => {
+  const r = compareTrees([], null);
+  assert.equal(r.changedDays, 0); assert.equal(r.days.length, 7); assert.equal(r.days[0].a.kcal, 0);
+});
