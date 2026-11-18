@@ -2,13 +2,16 @@ import React, { createContext, useContext, useEffect, useState } from "react";
 import { supabase } from "../lib/supabase.js";
 
 const AuthCtx = createContext(null);
+// Линкът от имейла с покана връща с #...type=invite → новият потребител първо задава парола.
+// Четем го при зареждане, преди supabase-js да изчисти адреса.
+const INVITE = typeof window !== "undefined" && /(^|[#&])type=invite(&|$)/.test(window.location.hash || "");
 export const useAuth = () => useContext(AuthCtx);
 
 export function AuthProvider({ children }) {
   const [session, setSession] = useState(null);
   const [profile, setProfile] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [recovery, setRecovery] = useState(false);
+  const [recovery, setRecovery] = useState(INVITE ? "invite" : false); // false | true (забравена парола) | "invite"
 
   async function loadProfile(userId) {
     if (!userId) { setProfile(null); return; }

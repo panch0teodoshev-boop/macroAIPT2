@@ -4,6 +4,7 @@ import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { confirmDialog } from "../ui/dialogApi.js";
+import { inviteNutritionist } from "../lib/ai.js";
 
 const STATUS = [
   { value: "invited", label: "Поканен" },
@@ -116,41 +117,71 @@ function Nutritionists() {
 }
 
 function NewNutritionist({ onClose, onCreated, onLog }) {
+  const [mode, setMode] = useState("invite"); // invite | manual
   const [f, setF] = useState({ full_name: "", email: "", client_limit: "", user_id: "" });
   const [err, setErr] = useState(""); const [busy, setBusy] = useState(false);
   const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const limit = f.client_limit === "" ? null : Number(f.client_limit);
+
+  const createProfile = async (id, email) => {
+    const { error } = await supabase.from("profiles").insert({
+      id, email, full_name: f.full_name.trim() || null, role: "nutritionist", status: "active", client_limit: limit,
+    });
+    return error;
+  };
 
   const save = async () => {
     if (busy) return;
-    if (!f.email.trim() || !f.user_id.trim()) { setErr("Имейл и User UID са задължителни."); return; }
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(f.user_id.trim())) { setErr("User UID не е валиден (очаква се формат xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."); return; }
+    const email = f.email.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) { setErr("Въведи валиден имейл."); return; }
+    if (limit != null && !(Number.isInteger(limit) && limit >= 0)) { setErr("Лимитът трябва да е цяло число ≥ 0 или празно."); return; }
+    if (mode === "manual" && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(f.user_id.trim())) { setErr("User UID не е валиден (очаква се формат xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)."); return; }
     setBusy(true); setErr("");
-    const { error } = await supabase.from("profiles").insert({
-      id: f.user_id.trim(), email: f.email.trim(), full_name: f.full_name.trim() || null,
-      role: "nutritionist", status: "active", client_limit: f.client_limit === "" ? null : Number(f.client_limit),
-    });
-    setBusy(false);
-    if (error) { setErr(error.message); return; }
-    await onLog?.("create_nutritionist", f.email.trim(), {});
-    onCreated(`Профилът на ${f.email.trim()} е създаден и активен.`);
+    try {
+      if (mode === "invite") {
+        const inv = await inviteNutritionist({ email, full_name: f.full_name.trim() });
+        const error = await createProfile(inv.id, email);
+        if (error) {
+          // поканата е изпратена, но профилът не е записан → даваме UID, за да се довърши ръчно
+          setErr(`Поканата е изпратена, но профилът не се записа (${error.message}). Довърши през „Ръчно (с UID)" с UID ${inv.id}.`);
+          setMode("manual"); set("user_id", inv.id); return;
+        }
+        await onLog?.("invite_nutritionist", email, {});
+        onCreated(`Поканата е изпратена на ${email}. Профилът е активен — нутриционистът задава парола от линка в имейла.`);
+      } else {
+        const error = await createProfile(f.user_id.trim(), email);
+        if (error) { setErr(error.message); return; }
+        await onLog?.("create_nutritionist", email, {});
+        onCreated(`Профилът на ${email} е създаден и активен.`);
+      }
+    } catch (e) {
+      setErr(e.message);
+    } finally { setBusy(false); }
   };
 
+  const tab = (id, label) => (
+    <button type="button" onClick={() => { setMode(id); setErr(""); }} style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 13, background: mode === id ? "#fff" : "transparent", color: mode === id ? t.tealDark : t.muted }}>{label}</button>
+  );
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(14,48,47,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 }} onClick={onClose}>
       <Card style={{ width: "100%", maxWidth: 480, maxHeight: "92vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ margin: "0 0 6px", color: t.ink }}>Нов нутриционист</h3>
+        <h3 style={{ margin: "0 0 10px", color: t.ink }}>Нов нутриционист</h3>
+        <div role="tablist" style={{ display: "inline-flex", background: t.tealPale, borderRadius: 10, padding: 3, marginBottom: 10 }}>
+          {tab("invite", "Покана по имейл")}{tab("manual", "Ръчно (с UID)")}
+        </div>
         <div style={{ background: t.tealPale, borderRadius: 10, padding: "10px 12px", fontSize: 12.5, color: t.tealDark, marginBottom: 12, lineHeight: 1.5 }}>
-          <b>Стъпка 1:</b> в Supabase → Authentication → Users → <i>Add user</i> създай потребителя (имейл + временна парола, Auto Confirm). Копирай <b>User UID</b>.<br />
-          <b>Стъпка 2:</b> попълни данните тук със същия UID. Профилът става активен веднага.
+          {mode === "invite"
+            ? <>Нутриционистът получава имейл с линк, от който задава своя парола. Профилът е активен веднага. Не е нужно да влизаш в Supabase.</>
+            : <><b>Стъпка 1:</b> в Supabase → Authentication → Users → <i>Add user</i> създай потребителя (имейл + временна парола, Auto Confirm). Копирай <b>User UID</b>.<br /><b>Стъпка 2:</b> попълни данните тук със същия UID.</>}
         </div>
         <Field label="Име"><Input value={f.full_name} onChange={(e) => set("full_name", e.target.value)} /></Field>
         <Field label="Имейл *"><Input type="email" value={f.email} onChange={(e) => set("email", e.target.value)} /></Field>
-        <Field label="User UID (от Supabase Auth) *"><Input value={f.user_id} onChange={(e) => set("user_id", e.target.value)} placeholder="напр. 36ad812b-7187-…" /></Field>
+        {mode === "manual" && <Field label="User UID (от Supabase Auth) *"><Input value={f.user_id} onChange={(e) => set("user_id", e.target.value)} placeholder="напр. 36ad812b-7187-…" /></Field>}
         <Field label="Лимит клиенти (празно = без лимит)"><Input type="number" value={f.client_limit} onChange={(e) => set("client_limit", e.target.value)} /></Field>
-        {err && <div style={{ color: t.warn, fontSize: 13, marginBottom: 8 }}>{err}</div>}
+        {err && <div role="alert" style={{ color: t.warn, fontSize: 13, marginBottom: 8 }}>{err}</div>}
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
           <Button variant="ghost" onClick={onClose}>Отказ</Button>
-          <Button onClick={save} style={{ opacity: busy ? 0.6 : 1 }}>{busy ? "Запис…" : "Създай профил"}</Button>
+          <Button onClick={save} disabled={busy} style={{ opacity: busy ? 0.6 : 1 }}>{busy ? (mode === "invite" ? "Изпращане…" : "Запис…") : mode === "invite" ? "Изпрати покана" : "Създай профил"}</Button>
         </div>
       </Card>
     </div>

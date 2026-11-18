@@ -105,6 +105,36 @@ test("роли: нутриционист няма „Админ панел“; �
   await s.context.close();
 });
 
+test("админ: покана по имейл създава активен профил и запис в журнала; повторен имейл → ясна грешка; линкът води към „Задай парола“", async () => {
+  const { page, be, context, errors } = await setup(); await login(page, "admin@test.local");
+  await nav(page, "Админ панел");
+  await page.getByRole("button", { name: "+ Нов нутриционист" }).click();
+  await page.getByLabel("Име", { exact: true }).fill("Нова Нутриционистка");
+  await page.getByLabel("Имейл *").fill("nova@test.bg");
+  await page.getByLabel("Лимит клиенти (празно = без лимит)").fill("20");
+  assert.equal(await page.getByLabel("User UID (от Supabase Auth) *").count(), 0, "при покана няма поле за UID");
+  await page.getByRole("button", { name: "Изпрати покана" }).click();
+  await page.getByText(/Поканата е изпратена на nova@test.bg/).waitFor();
+  const inv = be.state.invites[0];
+  const prof = be.db.profiles.find((p) => p.email === "nova@test.bg");
+  assert.equal(prof.id, inv.id); assert.equal(prof.status, "active"); assert.equal(prof.role, "nutritionist"); assert.equal(prof.client_limit, 20);
+  assert.ok(be.db.admin_audit.some((a) => a.action === "invite_nutritionist" && a.target === "nova@test.bg"));
+  // повторно → грешка, без втори профил
+  await page.getByRole("button", { name: "+ Нов нутриционист" }).click();
+  await page.getByLabel("Имейл *").fill("nova@test.bg");
+  await page.getByRole("button", { name: "Изпрати покана" }).click();
+  await page.getByText(/Този имейл вече има акаунт/).waitFor();
+  assert.equal(be.db.profiles.filter((p) => p.email === "nova@test.bg").length, 1);
+  await page.getByRole("button", { name: "Отказ" }).click();
+  // линкът от имейла (#...type=invite) → екран за задаване на парола
+  const s = be.session("nut@test.local");
+  const p2 = await context.newPage();
+  await p2.goto(`${BASE}#access_token=${s.access_token}&expires_in=3600&expires_at=${s.expires_at}&refresh_token=${s.refresh_token}&token_type=bearer&type=invite`);
+  await p2.getByText("Добре дошъл! Задай парола за акаунта си").waitFor();
+  await p2.getByRole("button", { name: "Задай паролата" }).waitFor();
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("клиенти: валидиране, създаване, редакция, архивиране; чужд клиент не се вижда", async () => {
   const { page, be, context, errors } = await setup(); await login(page);
   await nav(page, "Моите клиенти");

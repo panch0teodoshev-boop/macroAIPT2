@@ -20,7 +20,7 @@ export function createBackend() {
     plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [], erasure_log: [],
   };
   const users = {}; // email → {id, password}
-  const state = { failNext: null, aiCalls: [], aiReply: "Примерен отговор.", aiStatus: 200, requests: [] };
+  const state = { failNext: null, aiCalls: [], invites: [], aiReply: "Примерен отговор.", aiStatus: 200, requests: [] };
   let tick = 0;
 
   function addUser(email, password, profile) {
@@ -68,6 +68,14 @@ export function createBackend() {
     if (state.failNext) { const f = state.failNext(method, url); if (f) { if (f !== "keep") state.failNext = null; return route.abort("internetdisconnected"); } } // "keep" = трайно прекъсване (клиентът може да повтаря заявката)
 
     // ---------- AI прокси ----------
+    if (req.url().startsWith(AI) && url.pathname === "/admin/invite") { // имитира проксито: само активен админ
+      const sub = (() => { try { return JSON.parse(Buffer.from(req.headers().authorization.split(".")[1], "base64url").toString()).sub; } catch { return null; } })();
+      const me = db.profiles.find((p) => p.id === sub);
+      if (!me || me.role !== "super_admin" || me.status !== "active") return send(route, 403, { error: { message: "Само администратор може да кани нутриционисти." } });
+      const { email } = JSON.parse(req.postData() || "{}");
+      if (Object.keys(users).includes(email) || state.invites.some((i) => i.email === email)) return send(route, 409, { error: { message: "Този имейл вече има акаунт. Използвай „Ръчно (с UID)\"." } });
+      const id = uuid(); state.invites.push({ id, email }); return send(route, 200, { id, email });
+    }
     if (req.url().startsWith(AI)) {
       state.aiCalls.push({ headers: req.headers(), body: JSON.parse(req.postData() || "{}") });
       if (state.aiStatus !== 200) return send(route, state.aiStatus, { error: { message: "upstream error" } });
@@ -151,5 +159,5 @@ export function createBackend() {
     return send(route, 405, {});
   }
   async function install(context) { await context.route(SUPA + "/**", handle); await context.route(AI + "**", handle); }
-  return { db, state, addUser, install, uuid };
+  return { db, state, addUser, install, uuid, session };
 }

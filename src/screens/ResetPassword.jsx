@@ -5,7 +5,8 @@ import { t, FONT } from "../ui/theme.js";
 import { Button, Input, Field, Card } from "../ui/primitives.jsx";
 
 export default function ResetPassword() {
-  const { clearRecovery, signOut } = useAuth();
+  const { clearRecovery, signOut, recovery } = useAuth();
+  const invite = recovery === "invite";
   const [pw, setPw] = useState("");
   const [pw2, setPw2] = useState("");
   const [busy, setBusy] = useState(false);
@@ -29,12 +30,12 @@ export default function ResetPassword() {
       <Card style={{ width: "100%", maxWidth: 380 }}>
         <div style={{ textAlign: "center", marginBottom: 20 }}>
           <div style={{ fontSize: 22, fontWeight: 800, color: t.tealDark }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
-          <div style={{ fontSize: 13, color: t.muted, marginTop: 2 }}>Задай нова парола</div>
+          <div style={{ fontSize: 13, color: t.muted, marginTop: 2 }}>{invite ? "Добре дошъл! Задай парола за акаунта си" : "Задай нова парола"}</div>
         </div>
 
         {done ? (
           <div style={{ display: "grid", gap: 14, textAlign: "center" }}>
-            <div style={{ color: t.good, fontWeight: 700 }}>Паролата е сменена успешно.</div>
+            <div style={{ color: t.good, fontWeight: 700 }}>{invite ? "Паролата е зададена. Акаунтът е готов." : "Паролата е сменена успешно."}</div>
             <Button onClick={() => clearRecovery()} style={{ width: "100%" }}>Влез в приложението</Button>
           </div>
         ) : (
@@ -42,7 +43,7 @@ export default function ResetPassword() {
             <Field label="Нова парола"><Input type="password" value={pw} onChange={(e) => setPw(e.target.value)} autoComplete="new-password" required /></Field>
             <Field label="Повтори новата парола"><Input type="password" value={pw2} onChange={(e) => setPw2(e.target.value)} autoComplete="new-password" required /></Field>
             {err && <div style={{ color: t.warn, fontSize: 13, marginBottom: 10 }}>{err}</div>}
-            <Button type="submit" style={{ width: "100%", opacity: busy ? 0.6 : 1 }}>{busy ? "Запис…" : "Запази новата парола"}</Button>
+            <Button type="submit" style={{ width: "100%", opacity: busy ? 0.6 : 1 }}>{busy ? "Запис…" : invite ? "Задай паролата" : "Запази новата парола"}</Button>
             <button type="button" onClick={async () => { await signOut(); clearRecovery(); }} style={{ display: "block", width: "100%", textAlign: "center", marginTop: 12, background: "none", border: "none", color: t.muted, fontFamily: FONT, fontSize: 13, cursor: "pointer" }}>Отказ</button>
           </form>
         )}

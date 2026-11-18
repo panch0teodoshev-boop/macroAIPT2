@@ -42,3 +42,22 @@ export async function aiRequest({ system, messages, maxTokens = 1024, timeoutMs 
   const text = (body?.content || []).map((b) => b.text || "").join("").trim();
   return { text, truncated: body?.stop_reason === "max_tokens" };
 }
+
+/** Покана за нов нутриционист през проксито (само за админ). Връща { id, email }. */
+export async function inviteNutritionist({ email, full_name }) {
+  if (!AI_ENDPOINT) throw new Error("Проксито не е конфигурирано.");
+  const { data } = await supabase.auth.getSession();
+  const token = data?.session?.access_token;
+  let res;
+  try {
+    res = await fetch(new URL("/admin/invite", AI_ENDPOINT).toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: JSON.stringify({ email, full_name }),
+    });
+  } catch { throw new Error("Няма връзка с услугата за покани. Провери интернет връзката."); }
+  let body = null;
+  try { body = await res.json(); } catch { /* не-JSON */ }
+  if (!res.ok || body?.error) throw Object.assign(new Error(body?.error?.message || `Грешка при поканата (HTTP ${res.status}).`), { status: res.status });
+  return body;
+}
