@@ -8,7 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "test": "node --test src/lib/nutrition.test.mjs src/lib/planMath.test.mjs src/lib/measurements.test.mjs src/lib/aiFoods.test.mjs cloudflare/worker.test.mjs",
-    "test:rls": "node --test tests/rls/baseline.test.mjs tests/rls/hardened.test.mjs tests/rls/templates.test.mjs",
+    "test:rls": "node --test tests/rls/baseline.test.mjs tests/rls/hardened.test.mjs tests/rls/templates.test.mjs tests/rls/erasure.test.mjs",
     "test:e2e": "VITE_SUPABASE_URL=https://test.supabase.co VITE_SUPABASE_ANON_KEY=anon-test VITE_AI_PROXY_URL=https://ai.test/ vite build --outDir dist-e2e && node --test --test-timeout=120000 tests/e2e/app.e2e.mjs",
     "test:all": "npm test && npm run test:rls && npm run test:e2e",
     "lint": "eslint ."

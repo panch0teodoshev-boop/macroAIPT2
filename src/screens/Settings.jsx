@@ -107,6 +107,7 @@ function GdprTools() {
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState(null);
   const [confirm, setConfirm] = useState(null);
+  const [logKey, setLogKey] = useState(0);
 
   async function load() {
     setLoading(true);
@@ -161,15 +162,15 @@ function GdprTools() {
     if (!client) return;
     setBusy("del"); setMsg(null);
     try {
-      // 1) AI разговори са със SET NULL при триене на клиент — трием ги изрично за пълна заличка.
-      await supabase.from("ai_conversations").delete().eq("client_id", clientId);
-      // 2) Клиентът — каскадно премахва мерки, планове, версии, дни, хранения, айтеми.
-      const { error } = await supabase.from("clients").delete().eq("id", clientId);
+      // Една транзакция в базата (функция erase_client, миграция 0006): AI разговори + клиентът
+      // с мерки и режими (каскадно) — или всичко, или нищо. Тригер записва изтриването в журнала.
+      const { data, error } = await supabase.rpc("erase_client", { p_client: clientId });
       if (error) throw error;
       setConfirm(null); setClientId("");
-      setMsg({ ok: true, text: `Всички данни за „${label(client)}" са изтрити необратимо.` });
-      load();
-    } catch (e) { setMsg({ ok: false, text: e.message }); }
+      const c = data || {};
+      setMsg({ ok: true, text: `Всички данни за „${label(client)}" са изтрити необратимо (мерки: ${c.measurements ?? 0}, режими: ${c.plans ?? 0}, AI разговори: ${c.ai_conversations ?? 0}). Записано е в журнала по-долу — без лични данни.` });
+      load(); setLogKey((k) => k + 1);
+    } catch (e) { setMsg({ ok: false, text: "Изтриването не успя, нищо не е променено: " + e.message }); }
     setBusy("");
   }
 
@@ -194,14 +195,54 @@ function GdprTools() {
             </div>
           )}
 
-          {msg && <div style={{ fontSize: 13, fontWeight: 600, color: msg.ok ? t.good : t.warn }}>{msg.text}</div>}
         </div>
       )}
+      {msg && <div role={msg.ok ? "status" : "alert"} style={{ fontSize: 13, fontWeight: 600, color: msg.ok ? t.good : t.warn, marginTop: 12 }}>{msg.text}</div>}
+
+      <ErasureLog key={logKey} />
 
       {confirm && (
         <EraseConfirm client={confirm} label={label(confirm)} busy={busy === "del"} onCancel={() => setConfirm(null)} onConfirm={erase} />
       )}
     </Card>
+  );
+}
+
+// Журнал на заличаванията (GDPR чл. 5(2) — отчетност). Без лични данни: дата, вътрешен номер, бройки.
+function ErasureLog() {
+  const { session } = useAuth();
+  const [rows, setRows] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    supabase.from("erasure_log").select("id, client_ref, source, counts, erased_at").eq("nutritionist_id", session.user.id).order("erased_at", { ascending: false }).limit(50)
+      .then(({ data, error }) => { if (error) setErr(error.message); else setRows(data || []); });
+  }, [session.user.id]);
+  const fmt = (d) => new Date(d).toLocaleString("bg-BG", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  const th = { padding: "7px 10px", fontSize: 12, fontWeight: 700, textAlign: "left" };
+  const td = { padding: "7px 10px", fontSize: 13, color: t.ink, borderBottom: `1px solid ${t.line}` };
+  return (
+    <div style={{ marginTop: 18, borderTop: `1px solid ${t.line}`, paddingTop: 14 }}>
+      <div style={{ fontWeight: 700, color: t.ink, fontSize: 14, marginBottom: 2 }}>Журнал на заличаванията</div>
+      <div style={{ color: t.muted, fontSize: 12.5, marginBottom: 10 }}>Доказателство, че данните са изтрити: кога и колко записа. Не съдържа име или други лични данни и не може да се редактира.</div>
+      {err && <div style={{ color: t.muted, fontSize: 13 }}>Журналът не можа да се зареди ({err}).</div>}
+      {!err && rows === null && <div style={{ color: t.muted, fontSize: 13 }}>Зареждане…</div>}
+      {rows && rows.length === 0 && <div style={{ color: t.muted, fontSize: 13 }}>Още няма изтрити клиенти.</div>}
+      {rows && rows.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", minWidth: 460, borderCollapse: "collapse" }}>
+            <thead><tr style={{ background: t.tealPale, color: t.tealDark }}><th style={th}>Дата</th><th style={th}>Номер на записа</th><th style={th}>Повод</th><th style={th}>Изтрити</th></tr></thead>
+            <tbody>{rows.map((r) => (
+              <tr key={r.id}>
+                <td style={td}>{fmt(r.erased_at)}</td>
+                <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 12 }} title={r.client_ref}>{r.client_ref.slice(0, 8)}…</td>
+                <td style={td}>{r.source === "gdpr_request" ? "Заявка за изтриване" : "Друго"}</td>
+                <td style={{ ...td, color: t.muted }}>мерки {r.counts?.measurements ?? 0} · режими {r.counts?.plans ?? 0} · AI {r.counts?.ai_conversations ?? 0}</td>
+              </tr>
+            ))}</tbody>
+          </table>
+        </div>
+      )}
+    </div>
   );
 }
 

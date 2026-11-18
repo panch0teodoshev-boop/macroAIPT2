@@ -17,7 +17,7 @@ const CASCADE = { clients: [["plans", "client_id"], ["client_measurements", "cli
 export function createBackend() {
   const db = {
     profiles: [], clients: [], client_measurements: [], foods: [], recipes: [], recipe_ingredients: [], plans: [], plan_versions: [],
-    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [],
+    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [], erasure_log: [],
   };
   const users = {}; // email → {id, password}
   const state = { failNext: null, aiCalls: [], aiReply: "Примерен отговор.", aiStatus: 200, requests: [] };
@@ -94,6 +94,16 @@ export function createBackend() {
     const me = db.profiles.find((p) => p.id === sub);
     if (m[1]) { // rpc
       if (m[2] === "admin_client_counts") { if (me?.role !== "super_admin") return send(route, 200, []); const c = {}; db.clients.filter((x) => !x.archived).forEach((x) => (c[x.nutritionist_id] = (c[x.nutritionist_id] || 0) + 1)); return send(route, 200, Object.entries(c).map(([nutritionist_id, active_clients]) => ({ nutritionist_id, active_clients }))); }
+      if (m[2] === "erase_client") { // имитира 0006: атомарно заличаване + запис в журнала
+        const { p_client } = JSON.parse(req.postData() || "{}");
+        const c = me?.status === "active" && db.clients.find((x) => x.id === p_client && x.nutritionist_id === sub);
+        if (!c) return send(route, 403, { code: "42501", message: "Клиентът не е намерен или нямате достъп до него." });
+        const plans = db.plans.filter((p) => p.client_id === c.id);
+        const counts = { measurements: db.client_measurements.filter((x) => x.client_id === c.id).length, plans: plans.length, plan_items: 0, ai_conversations: db.ai_conversations.filter((x) => x.client_id === c.id).length };
+        remove("ai_conversations", db.ai_conversations.filter((x) => x.client_id === c.id)); remove("clients", [c]);
+        db.erasure_log.push({ id: db.erasure_log.length + 1, client_ref: c.id, nutritionist_id: sub, erased_by: sub, source: "gdpr_request", counts, erased_at: new Date().toISOString() });
+        return send(route, 200, counts);
+      }
       return send(route, 404, { message: "no rpc" });
     }
     const table = m[2]; if (!db[table]) return send(route, 404, { message: "no table " + table });
@@ -101,7 +111,7 @@ export function createBackend() {
     const own = (r) => {
       if (!me || me.status !== "active") return table === "profiles" && r.id === sub;
       if (table === "profiles") return r.id === sub || me.role === "super_admin";
-      if (table === "clients" || table === "plans" || table === "ai_conversations") return r.nutritionist_id === sub;
+      if (table === "clients" || table === "plans" || table === "ai_conversations" || table === "erasure_log") return r.nutritionist_id === sub;
       if (table === "foods") return r.owner_id == null || r.owner_id === sub;
       if (table === "recipes") return r.owner_id === sub || db.profiles.find((p) => p.id === r.owner_id)?.role === "super_admin";
       return true;

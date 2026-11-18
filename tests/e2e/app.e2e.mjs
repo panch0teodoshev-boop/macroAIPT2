@@ -553,6 +553,31 @@ test("смяна на изгледа (завъртане) не затваря п
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("GDPR заличаване: потвърждение с име, всичко изчезва, запис в журнала без лични данни", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => {
+    const c = addClient(be, ids);
+    be.db.client_measurements.push({ id: be.uuid(), client_id: c.id, measured_on: "2026-11-01", weight_kg: 65 });
+    be.db.ai_conversations.push({ id: be.uuid(), nutritionist_id: ids.nutId, client_id: c.id, messages: [] });
+  } }); await login(page);
+  await page.getByText("Здравей").waitFor();
+  await nav(page, "Настройки");
+  await page.getByText("Още няма изтрити клиенти.").waitFor();
+  await page.locator("select").filter({ hasText: "— избери —" }).selectOption({ label: "Мария Иванова" });
+  await page.getByRole("button", { name: "🗑 Изтрий всички данни" }).click();
+  const go = page.getByRole("button", { name: "Изтрий завинаги" });
+  assert.equal(await go.isDisabled(), true, "без въведено име бутонът е неактивен");
+  await page.getByPlaceholder("Мария").fill("Мария");
+  await go.click();
+  await page.getByText(/Всички данни за „Мария Иванова" са изтрити необратимо \(мерки: 1, режими: 0, AI разговори: 1\)/).waitFor();
+  assert.equal(be.db.clients.filter((c) => c.first_name === "Мария").length, 0);
+  assert.equal(be.db.client_measurements.length, 0); assert.equal(be.db.ai_conversations.length, 0);
+  const row = page.locator("tr", { hasText: "Заявка за изтриване" });
+  await row.waitFor();
+  assert.match(await row.innerText(), /мерки 1 · режими 0 · AI 1/);
+  assert.equal(JSON.stringify(be.db.erasure_log).includes("Мария"), false);
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("шаблони: запазване на ден и седмица, прилагане (добавяне/замяна/нова чернова), изтрит продукт, изтриване", async () => {
   const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);
