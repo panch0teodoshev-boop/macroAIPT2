@@ -29,9 +29,10 @@ export default function Markdown({ text }) {
         }
         if (b.t === "table") return (
           <div key={i} style={{ overflowX: "auto" }}>
-            <table style={{ borderCollapse: "collapse", fontSize: 13, minWidth: "60%" }}>
-              <thead><tr>{b.head.map((c, j) => <th key={j} style={{ textAlign: "left", padding: "5px 10px", background: t.tealPale, color: t.tealDark, borderBottom: `1px solid ${t.line}` }}><Inline nodes={c} /></th>)}</tr></thead>
-              <tbody>{b.rows.map((r, j) => <tr key={j}>{r.map((c, k) => <td key={k} style={{ padding: "5px 10px", borderBottom: `1px solid ${t.line}` }}><Inline nodes={c} /></td>)}</tr>)}</tbody>
+            {/* компактна таблица: на телефон колоните се събират в балона, имената се пренасят на нов ред */}
+            <table style={{ borderCollapse: "collapse", fontSize: 12.5, width: "100%", lineHeight: 1.35 }}>
+              <thead><tr>{b.head.map((c, j) => <th key={j} style={{ textAlign: "left", padding: "5px 5px", background: t.tealPale, color: t.tealDark, borderBottom: `1px solid ${t.line}`, whiteSpace: j ? "nowrap" : "normal" }}><Inline nodes={c} /></th>)}</tr></thead>
+              <tbody>{b.rows.map((r, j) => <tr key={j}>{r.map((c, k) => <td key={k} style={{ padding: "5px 5px", borderBottom: `1px solid ${t.line}`, verticalAlign: "top", overflowWrap: k ? "normal" : "break-word" }}><Inline nodes={c} /></td>)}</tr>)}</tbody>
             </table>
           </div>
         );

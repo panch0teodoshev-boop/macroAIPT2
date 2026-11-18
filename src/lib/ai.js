@@ -22,16 +22,24 @@ export async function aiRequest({ system, messages, maxTokens = 1024, timeoutMs 
   const token = data?.session?.access_token;
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const payload = JSON.stringify({ model: AI_MODEL, max_tokens: maxTokens, system, messages });
+  const call = () => fetch(AI_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    body: payload,
+    signal: ctrl.signal,
+  });
   let res;
   try {
-    res = await fetch(AI_ENDPOINT, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify({ model: AI_MODEL, max_tokens: maxTokens, system, messages }),
-      signal: ctrl.signal,
-    });
+    try { res = await call(); }
+    catch (e) {
+      // Прекъсната връзка (често при мобилен интернет или временен проблем) → един автоматичен повторен опит.
+      if (e.name === "AbortError") throw e;
+      await new Promise((r) => setTimeout(r, 1500));
+      res = await call();
+    }
   } catch (e) {
-    throw new Error(e.name === "AbortError" ? "AI не отговори навреме. Опитай отново." : "Няма връзка с AI услугата. Провери интернет връзката.");
+    throw new Error(e.name === "AbortError" ? "AI не отговори навреме. Опитай отново." : "Връзката с AI прекъсна (два опита). Провери интернет връзката и опитай отново.");
   } finally { clearTimeout(timer); }
   let body = null;
   try { body = await res.json(); } catch { /* не-JSON отговор */ }

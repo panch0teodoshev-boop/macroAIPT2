@@ -503,6 +503,14 @@ test("AI асистент: минимизиран контекст с дневн
   await page.getByRole("button", { name: "Изпрати" }).click();
   await page.getByText("⚠️ AI не върна отговор. Опитай отново.").waitFor();
   assert.equal(be.db.ai_conversations[0].messages.some((m) => m.role === "assistant" && !m.content), false);
+  // прекъсната връзка при първия опит → автоматичен повторен опит, отговорът идва
+  be.state.aiReply = "Отговор след повторен опит.";
+  be.state.failNext = (method, url) => method === "POST" && url.hostname === "ai.test";
+  const callsBefore = be.state.aiCalls.length;
+  await page.getByPlaceholder(/Въпрос за режима/).fill("въпрос при лоша връзка");
+  await page.getByRole("button", { name: "Изпрати" }).click();
+  await page.getByText("Отговор след повторен опит.").waitFor();
+  assert.equal(be.state.aiCalls.length, callsBefore + 1, "първият опит е прекъснат, вторият минава");
   // форматиране: заглавия, удебелен текст, линия, списък и таблица — без сурови „#“ и „**“; HTML остава текст
   be.state.aiStatus = 200;
   be.state.aiReply = "# 6 идеи за закуски\n\nЕто варианти.\n\n---\n\n## 1. Бъркани яйца\n**2 яйца + чушка**\n~300 ккал | ~18г протеин\n\n- първо\n- второ\n\n| Храна | kcal |\n|---|---|\n| Ориз | 130 |\n\n<b>не е удебелено</b>";
@@ -518,6 +526,15 @@ test("AI асистент: минимизиран контекст с дневн
   assert.equal(/\*\*|^#/m.test(raw.split("закуски").slice(1).join("")), false, "без сурови знаци за форматиране");
   assert.equal(be.db.ai_conversations[0].messages.at(-1).content.startsWith("# 6 идеи"), true, "записва се оригиналният текст");
   if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/ai-markdown.png" });
+  // широка таблица на телефон: събира се в балона без хоризонтално превъртане
+  be.state.aiReply = "| Продукт | Грамаж | kcal | П | В | М |\n|---|---|---|---|---|---|\n| Бяло сирене (краве) | 50 g | 130 | 8,5 | 0,5 | 10,5 |\n| Яйце кокоше (цяло) | 200 g (≈4 бр) | 286 | 26,0 | 1,4 | 19,0 |\n| **Общо** | | **416** | **34,5** | **1,9** | **29,5** |";
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.getByPlaceholder(/Въпрос за режима/).fill("таблица");
+  await page.getByRole("button", { name: "Изпрати" }).click();
+  await page.getByRole("cell", { name: "Яйце кокоше (цяло)" }).waitFor();
+  const fit = await page.evaluate(() => { const tb = [...document.querySelectorAll("main table")].at(-1); const box = tb.parentElement; return { tw: tb.scrollWidth, bw: box.clientWidth }; });
+  assert.ok(fit.tw <= fit.bw + 1, "таблицата се събира: " + JSON.stringify(fit));
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/ai-table-375.png" });
   await context.close();
 });
 

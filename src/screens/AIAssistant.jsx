@@ -168,7 +168,7 @@ export default function AIAssistant() {
         )}
         {messages.map((m, i) => (
           <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{ maxWidth: "85%", minWidth: 0, whiteSpace: m.role === "user" || m.error ? "pre-wrap" : "normal", overflowWrap: "break-word", fontSize: 14, lineHeight: 1.5, padding: "10px 13px", borderRadius: 14, background: m.role === "user" ? t.teal : "#fff", color: m.role === "user" ? "#fff" : t.ink, border: m.role === "user" ? "none" : `1px solid ${t.line}` }}>{m.role === "assistant" && !m.error ? <Markdown text={m.content} /> : m.content}</div>
+            <div style={{ maxWidth: m.role === "user" ? "85%" : "94%", minWidth: 0, whiteSpace: m.role === "user" || m.error ? "pre-wrap" : "normal", overflowWrap: "break-word", fontSize: 14, lineHeight: 1.5, padding: "10px 13px", borderRadius: 14, background: m.role === "user" ? t.teal : "#fff", color: m.role === "user" ? "#fff" : t.ink, border: m.role === "user" ? "none" : `1px solid ${t.line}` }}>{m.role === "assistant" && !m.error ? <Markdown text={m.content} /> : m.content}</div>
           </div>
         ))}
         {busy && <div style={{ color: t.muted, fontSize: 13 }}>Мисля…</div>}
