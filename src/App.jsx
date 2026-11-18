@@ -54,7 +54,7 @@ function Shell() {
   const goto = (id) => { setCalcInitial(null); setView(id); setMenuOpen(false); };
   const openCalcFor = (c) => {
     const age = ageFromBirthDate(c.birth_date);
-    setCalcInitial({ clientName: `${c.first_name} ${c.last_name || ""}`.trim(), sex: c.sex || "male", weightKg: c.weight_kg ?? "", heightCm: c.height_cm ?? "", age: age ?? "", activity: c.activity_level || "moderate" });
+    setCalcInitial({ clientId: c.id, clientName: `${c.first_name} ${c.last_name || ""}`.trim(), sex: c.sex || "male", weightKg: c.weight_kg ?? "", heightCm: c.height_cm ?? "", age: age ?? "", activity: c.activity_level || "moderate" });
     setView("calculator"); setMenuOpen(false);
   };
   const openPlanFor = (c) => { try { localStorage.setItem("pn.planner.client", c.id); } catch { /* няма достъп */ } goto("planner"); };

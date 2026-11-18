@@ -344,6 +344,49 @@ test("калкулатор: проверени стойности, празно 
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("цел от калкулатора: запис към режима, планерът я ползва, дублиране я пренася, финал не се пипа", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await nav(page, "Моите клиенти");
+  await page.getByRole("main").getByRole("button", { name: "Калкулатор", exact: true }).click();
+  await page.getByText(/Заредени са данните на клиент/).waitFor();
+  // Мария: жена, 40 г., 168 см, 65 кг, умерена. Mifflin: 10·65 + 6.25·168 − 5·40 − 161 = 1339; TDEE 1339·1.55 = 2075.45
+  await page.getByLabel("Протеин — стойност").fill("2.2");      // 2.2·65 = 143 g; мазнини 1·65 = 65 g
+  await page.getByRole("button", { name: "Запази като цел на режима" }).click();
+  await page.getByText("Целта е записана към режим v1: 2075 kcal · П 143 г · В 230 г · М 65 г.").waitFor(); // (2075.45 − 572 − 585)/4 = 229.6
+  assert.equal(be.db.plans.length, 1); assert.equal(be.db.plan_versions.length, 1);
+  const tg = be.db.plan_versions[0].targets;
+  assert.equal(tg.kcal, 2075.45); assert.equal(tg.protein_g, 143); assert.equal(tg.fat_g, 65); assert.equal(tg.source, "calculator");
+  assert.equal(String(tg.inputs.proteinValue), "2.2");
+  // планерът сравнява с записаната цел, не с формулата (2 g/kg, −15%)
+  await openPlanner(page);
+  const goalRow = async () => (await page.locator("tr", { hasText: "Цел/ден" }).innerText()).replace(/\s+/g, " ");
+  assert.match(await goalRow(), /Цел\/ден 2075 143 230 65/);
+  await page.getByText(/Целта е зададена в калкулатора/).waitFor();
+  // дублиране пренася целта
+  await page.locator("select", { hasText: "+ Нова версия…" }).selectOption({ label: "Дублирай текущата" });
+  await page.getByText("v2 · чернова").waitFor({ state: "attached" });
+  assert.match(await goalRow(), /Цел\/ден 2075 143 230 65/);
+  assert.equal(be.db.plan_versions.find((v) => v.version === 2).targets.kcal, 2075.45);
+  // финализирана работна версия: калкулаторът не я променя
+  await page.getByRole("button", { name: "✓ Финализирай" }).click();
+  await page.getByText(/е финализирана и е заключена/).waitFor();
+  await nav(page, "Моите клиенти"); await page.getByRole("main").getByRole("button", { name: "Калкулатор", exact: true }).click();
+  await page.getByText(/Настройките са от записаната цел на режим v2/).waitFor();
+  assert.equal(await page.getByLabel("Протеин — стойност").inputValue(), "2.2", "настройките се зареждат обратно");
+  await page.getByLabel("Протеин — стойност").fill("1.8");
+  await page.getByRole("button", { name: "Запази като цел на режима" }).click();
+  await page.getByText(/Версия 2 на режима е финализирана и заключена/).waitFor();
+  assert.equal(be.db.plan_versions.find((v) => v.version === 2).targets.protein_g, 143, "финалната цел е непроменена");
+  assert.deepEqual(errors, []); await context.close();
+});
+
+test("цел: без записана цел планерът казва, че е по формула", async () => {
+  const { page, context } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  await page.getByText(/Целта е ориентир по формула от профила/).waitFor();
+  await context.close();
+});
+
 test("XSS: HTML в име на клиент се показва като текст — в списъка и в PDF експорта", async () => {
   const evil = '<img src=x onerror="window.__xss=1">';
   const { page, context } = await setup({ seed: (be, ids) => addClient(be, ids, { first_name: evil, last_name: "X" }) }); await login(page);

@@ -3,7 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   itemFactor, itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing,
-  servingsOf, microSummary, ageFromBirthDate, clientTarget, parseQty,
+  servingsOf, microSummary, ageFromBirthDate, clientTarget, parseQty, savedTarget, effectiveTarget,
 } from "./planMath.mjs";
 import { round, calcMacros, calcBMR, bmrHarrisBenedict, bmrMifflin, calcTDEE, calcEnergyTarget, ACTIVITY_FACTORS, KCAL_PER_G } from "./nutrition.mjs";
 
@@ -165,3 +165,25 @@ test("round: половинка далеч от нулата, без −0, ус�
   assert.equal(Object.is(round(-0.2), -0), false); assert.equal(round(-0.2), 0);
   assert.equal(round(349.75, 1), 349.8); assert.equal(round(NaN), 0);
 });
+
+// ---------- записана цел от калкулатора ----------
+const ivan = { sex: "male", weight_kg: 80, height_cm: 180, birth_date: "1996-01-01", activity_level: "moderate", main_goal: "maintenance" };
+const NOW = new Date("2026-11-18T12:00:00Z");
+test("записана цел има предимство пред формулата", () => {
+  const t = effectiveTarget({ kcal: 2200, protein_g: 180, carbs_g: 200, fat_g: 75, saved_at: "2026-11-18T10:00:00Z" }, ivan, NOW);
+  assert.equal(t.source, "saved"); assert.equal(t.kcal, 2200); assert.equal(t.protein_g, 180); assert.deepEqual(t.assumed, []);
+  assert.equal(t.savedAt, "2026-11-18T10:00:00Z");
+});
+test("празна или невалидна записана цел → ориентировъчна от профила", () => {
+  const d = clientTarget(ivan, NOW);
+  for (const bad of [null, undefined, {}, { kcal: 0, protein_g: 1, carbs_g: 1, fat_g: 1 }, { kcal: -5, protein_g: 1, carbs_g: 1, fat_g: 1 },
+    { kcal: 2000, protein_g: -1, carbs_g: 1, fat_g: 1 }, { kcal: 2000, protein_g: 150 }, { kcal: "abc", protein_g: 1, carbs_g: 1, fat_g: 1 }, "2000"]) {
+    const t = effectiveTarget(bad, ivan, NOW);
+    assert.equal(t.source, "default", JSON.stringify(bad)); assert.equal(t.kcal, d.kcal);
+  }
+});
+test("записана цел от низове ('2200.5') се чете като число; 0 g мазнини е валидно", () => {
+  const t = savedTarget({ kcal: "2200.5", protein_g: "150", carbs_g: "250", fat_g: 0 });
+  assert.equal(t.kcal, 2200.5); assert.equal(t.fat_g, 0);
+});
+test("без клиент и без записана цел → null", () => { assert.equal(effectiveTarget({}, null, NOW), null); });

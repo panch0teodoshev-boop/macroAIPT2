@@ -142,6 +142,26 @@ export function clientTarget(c, now = new Date()) {
   return { age, bmr, tdee, kcal: energy.target, protein_g: m.protein.grams, carbs_g: m.carbs.grams, fat_g: m.fat.grams, assumed };
 }
 
+/**
+ * Записана от калкулатора цел (plan_versions.targets) → нормализиран обект, или null ако
+ * липсва или е невалидна. Валидна е при kcal > 0 и неотрицателни макроси.
+ */
+export function savedTarget(targets) {
+  if (!targets || typeof targets !== "object") return null;
+  const kcal = val(targets.kcal), p = val(targets.protein_g), c = val(targets.carbs_g), f = val(targets.fat_g);
+  if (!(isFinite(kcal) && kcal > 0)) return null;
+  if (![p, c, f].every((x) => isFinite(x) && x >= 0)) return null;
+  return { kcal, protein_g: p, carbs_g: c, fat_g: f, assumed: [], source: "saved", savedAt: targets.saved_at || null, inputs: targets.inputs || null };
+}
+
+/** Целта, по която се сравнява режимът: записаната във версията, иначе ориентировъчната от профила. */
+export function effectiveTarget(targets, client, now = new Date()) {
+  const s = savedTarget(targets);
+  if (s) return s;
+  const d = clientTarget(client, now);
+  return d ? { ...d, source: "default" } : null;
+}
+
 /** Валидира въведено количество: връща число в [0, max] или null при невалиден вход. */
 export function parseQty(input, max = 99999) {
   const s = String(input ?? "").trim().replace(",", ".");

@@ -1,6 +1,8 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
+import { supabase } from "../lib/supabase.js";
+import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
-import { Card, Field, Input, Select, Stat } from "../ui/primitives.jsx";
+import { Button, Card, Field, Input, Select, Stat } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import {
   calcBMR, calcTDEE, calcEnergyTarget, calcMacros, calcBMI, predictWeeklyWeightChange, round, ACTIVITY_FACTORS,
@@ -9,6 +11,19 @@ import {
 const n = (v) => (v === "" || v == null ? NaN : Number(String(v).replace(",", ".")));
 const FORMULA_BG = { mifflin: "Mifflin–St Jeor", harris_benedict: "Harris–Benedict", katch_mcardle: "Katch–McArdle" };
 const BMI_BG = { underweight: "поднормено", normal: "нормално", overweight: "наднормено", obese: "затлъстяване", unknown: "" };
+// Настройките, които се пазят със записаната цел и се зареждат обратно (телесните данни идват от профила).
+const SETTING_KEYS = ["formula", "activity", "bodyFatPct", "energyMode", "energyValue", "proteinMode", "proteinValue", "fatMode", "fatValue"];
+const fmtDate = (iso) => { try { return new Date(iso).toLocaleDateString("bg-BG"); } catch { return ""; } };
+
+/** Работната версия на режима на клиента: както я отваря планерът (най-новата неархивирана). */
+async function workingVersion(clientId) {
+  const { data: pl, error: e1 } = await supabase.from("plans").select("id").eq("client_id", clientId).order("created_at").limit(1).maybeSingle();
+  if (e1) throw e1;
+  if (!pl) return { plan: null, version: null };
+  const { data: vers, error: e2 } = await supabase.from("plan_versions").select("id, version, status, targets").eq("plan_id", pl.id).order("version", { ascending: false });
+  if (e2) throw e2;
+  return { plan: pl, version: (vers || []).find((v) => v.status !== "archived") || (vers || [])[0] || null };
+}
 
 export default function Calculator({ initial }) {
   const [f, setF] = useState({
@@ -19,7 +34,26 @@ export default function Calculator({ initial }) {
     fatMode: "g_per_kg", fatValue: 1,
     ...(initial || {}),
   });
-  const set = (k, v) => setF((x) => ({ ...x, [k]: v }));
+  const set = (k, v) => { setF((x) => ({ ...x, [k]: v })); setSaveMsg(null); };
+  const { session } = useAuth();
+  const clientId = initial?.clientId || null;
+  const [saveMsg, setSaveMsg] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [loadedFrom, setLoadedFrom] = useState(null);
+
+  // При отваряне за клиент: зареждаме настройките от вече записаната цел (ако има).
+  useEffect(() => {
+    if (!clientId) return;
+    let alive = true;
+    workingVersion(clientId).then(({ version }) => {
+      const inp = version?.targets?.inputs;
+      if (!alive || !inp) return;
+      const picked = {}; SETTING_KEYS.forEach((k) => { if (inp[k] !== undefined && inp[k] !== null) picked[k] = inp[k]; });
+      setF((x) => ({ ...x, ...picked }));
+      setLoadedFrom({ version: version.version, savedAt: version.targets.saved_at });
+    }).catch(() => { /* без записана цел — работим с профила */ });
+    return () => { alive = false; };
+  }, [clientId]);
   const { width } = useViewport();
   const twoCol = width >= 900; // форма | резултати един до друг само при широк екран
   const statCols = "repeat(auto-fit,minmax(150px,1fr))";
@@ -45,6 +79,39 @@ export default function Calculator({ initial }) {
     return { bmr, tdee, factor, energy, macros, bmi, pred, warnings, valid };
   }, [f]);
   const show = (v, d = 0) => (r.valid && isFinite(v) ? round(v, d) : "—");
+  const canSave = r.valid && r.energy.target > 0 && !(r.macros.overAllocatedKcal > 0);
+
+  async function saveTarget() {
+    if (!clientId || !canSave || saving) return;
+    setSaving(true); setSaveMsg(null);
+    try {
+      let { plan, version } = await workingVersion(clientId);
+      if (version?.status === "final") {
+        setSaveMsg({ ok: false, text: `Версия ${version.version} на режима е финализирана и заключена. В „Седмичен режим" направи „Нова версия → Дублирай текущата" и запиши целта отново.` });
+        return;
+      }
+      const targets = {
+        kcal: round(r.energy.target, 2), protein_g: round(r.macros.protein.grams, 2), carbs_g: round(r.macros.carbs.grams, 2), fat_g: round(r.macros.fat.grams, 2),
+        source: "calculator", saved_at: new Date().toISOString(), bmr: round(r.bmr.value, 1), tdee: round(r.tdee, 1),
+        inputs: { sex: f.sex, weightKg: n(f.weightKg), heightCm: n(f.heightCm), age: n(f.age), ...Object.fromEntries(SETTING_KEYS.map((k) => [k, f[k]])) },
+      };
+      if (!plan) {
+        const { data: np, error } = await supabase.from("plans").insert({ client_id: clientId, nutritionist_id: session.user.id, title: "Седмичен режим" }).select("id").single();
+        if (error) throw error; plan = np;
+      }
+      if (!version) {
+        const { data: nv, error } = await supabase.from("plan_versions").insert({ plan_id: plan.id, version: 1, status: "draft", targets }).select("id, version").single();
+        if (error) throw error; version = nv;
+      } else {
+        const { error } = await supabase.from("plan_versions").update({ targets }).eq("id", version.id);
+        if (error) throw error;
+      }
+      setLoadedFrom({ version: version.version, savedAt: targets.saved_at });
+      setSaveMsg({ ok: true, text: `Целта е записана към режим v${version.version}: ${round(targets.kcal)} kcal · П ${round(targets.protein_g)} г · В ${round(targets.carbs_g)} г · М ${round(targets.fat_g)} г.` });
+    } catch (e) {
+      setSaveMsg({ ok: false, text: "Записът не успя: " + (e.message || e) });
+    } finally { setSaving(false); }
+  }
 
   return (
     <div style={{ display: "grid", gap: 16, gridTemplateColumns: twoCol ? "minmax(280px,360px) 1fr" : "1fr", alignItems: "start" }}>
@@ -86,7 +153,14 @@ export default function Calculator({ initial }) {
       </Card>
 
       <div style={{ display: "grid", gap: 14 }}>
-        {initial?.clientName && <Card style={{ background: t.tealPale, border: "none", color: t.tealDark, fontSize: 13, padding: "9px 14px" }}>Заредени са данните на клиент <b>{initial.clientName}</b>. Калкулаторът не променя профила му.</Card>}
+        {initial?.clientName && <Card style={{ background: t.tealPale, border: "none", color: t.tealDark, fontSize: 13, padding: "10px 14px", display: "grid", gap: 8 }}>
+          <div>Заредени са данните на клиент <b>{initial.clientName}</b>. Калкулаторът не променя профила му.{loadedFrom && <> Настройките са от записаната цел на режим v{loadedFrom.version}{loadedFrom.savedAt ? ` (${fmtDate(loadedFrom.savedAt)})` : ""}.</>}</div>
+          {clientId && <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Button onClick={saveTarget} disabled={!canSave || saving} style={{ opacity: !canSave || saving ? 0.55 : 1 }}>{saving ? "Записване…" : "Запази като цел на режима"}</Button>
+            <span style={{ fontSize: 12, color: t.muted }}>Планерът, AI асистентът и PDF ще сравняват режима с тази цел.</span>
+          </div>}
+          {saveMsg && <div role="status" style={{ fontSize: 13, fontWeight: 600, color: saveMsg.ok ? t.good : t.warn }}>{saveMsg.text}</div>}
+        </Card>}
         {r.warnings.length > 0 && <Card role="alert" style={{ background: t.coralLight, border: "none", color: t.coralDark, fontSize: 13, padding: "10px 14px" }}>
           {r.warnings.map((w) => <div key={w}>⚠️ {w}</div>)}
         </Card>}

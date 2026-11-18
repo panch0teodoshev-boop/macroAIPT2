@@ -5,7 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { round } from "../lib/nutrition.mjs";
-import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, clientTarget, parseQty } from "../lib/planMath.mjs";
+import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, parseQty } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
 
@@ -65,9 +65,9 @@ export default function Planner() {
     let pl = await run(supabase.from("plans").select("id, title").eq("client_id", id).order("created_at").limit(1).maybeSingle(), "Зареждането на режима");
     if (!pl) pl = await run(supabase.from("plans").insert({ client_id: id, nutritionist_id: session.user.id, title: "Седмичен режим" }).select("id, title").single(), "Създаването на режим");
     setPlan(pl);
-    let vers = await run(supabase.from("plan_versions").select("id, version, status, created_at").eq("plan_id", pl.id).order("version", { ascending: false }), "Зареждането на версиите");
+    let vers = await run(supabase.from("plan_versions").select("id, version, status, created_at, targets").eq("plan_id", pl.id).order("version", { ascending: false }), "Зареждането на версиите");
     if (!vers || vers.length === 0) {
-      const v1 = await run(supabase.from("plan_versions").insert({ plan_id: pl.id, version: 1, status: "draft", targets: {} }).select("id, version, status, created_at").single(), "Създаването на версия");
+      const v1 = await run(supabase.from("plan_versions").insert({ plan_id: pl.id, version: 1, status: "draft", targets: {} }).select("id, version, status, created_at, targets").single(), "Създаването на версия");
       vers = [v1];
     }
     setVersions(vers);
@@ -89,7 +89,7 @@ export default function Planner() {
 
   async function refreshVersions(pickId) {
     if (!plan) return;
-    const { data: vers } = await supabase.from("plan_versions").select("id, version, status, created_at").eq("plan_id", plan.id).order("version", { ascending: false });
+    const { data: vers } = await supabase.from("plan_versions").select("id, version, status, created_at, targets").eq("plan_id", plan.id).order("version", { ascending: false });
     setVersions(vers || []);
     if (pickId) { const v = (vers || []).find((x) => x.id === pickId); if (v) setVersion(v); }
     else { const cur = (vers || []).find((x) => x.id === version?.id); if (cur) setVersion(cur); }
@@ -119,7 +119,7 @@ export default function Planner() {
     if (!plan) return;
     setLoading(true);
     const nextNum = Math.max(0, ...versions.map((v) => v.version || 0)) + 1;
-    const nv = await run(supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: {} }).select("id, version, status, created_at").single(), "Създаването на версия");
+    const nv = await run(supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: mode === "duplicate" ? (version?.targets || {}) : {} }).select("id, version, status, created_at, targets").single(), "Създаването на версия");
     try {
       if (mode === "duplicate" && version) await copyVersionContent(version.id, nv.id);
       await ensureDays(nv.id); // допълва липсващи дни и при дублиране
@@ -186,7 +186,7 @@ export default function Planner() {
   }
 
   const day = tree.find((d) => d.weekday === dayIdx);
-  const target = useMemo(() => clientTarget(client), [client]);
+  const target = useMemo(() => effectiveTarget(version?.targets, client), [version, client]);
   const locked = version?.status === "final";
 
   const week = useMemo(() => weekSummary(tree), [tree]);
@@ -354,7 +354,9 @@ export default function Planner() {
               </table>
             </div>
             <div style={{ fontSize: 11, color: t.muted, padding: "6px 12px" }}>
-              Целта е ориентир от профила на клиента (Mifflin–St Jeor · {client?.main_goal === "reduction" ? "−15%" : client?.main_goal === "muscle_gain" ? "+15%" : "поддържане"} · 2 g/kg протеин · 1 g/kg мазнини).
+              {target.source === "saved"
+                ? <>Целта е зададена в калкулатора{target.savedAt ? ` на ${new Date(target.savedAt).toLocaleDateString("bg-BG")}` : ""} и е записана към тази версия.</>
+                : <>Целта е ориентир по формула от профила на клиента (Mifflin–St Jeor · {client?.main_goal === "reduction" ? "−15%" : client?.main_goal === "muscle_gain" ? "+15%" : "поддържане"} · 2 g/kg протеин · 1 g/kg мазнини). За индивидуална цел: „Моите клиенти" → Калкулатор → „Запази като цел на режима".</>}
               {" "}„Средно/ден" е общото за седмицата ÷ 7{week.filledDays > 0 && week.filledDays < 7 ? ` — попълнени са само ${week.filledDays} от 7 дни (средно за попълнените: ${round(week.avgFilled.kcal)} kcal)` : ""}.
             </div>
             {target.assumed.length > 0 && <div style={{ fontSize: 12, color: t.coralDark, background: t.coralLight, padding: "7px 12px" }}>

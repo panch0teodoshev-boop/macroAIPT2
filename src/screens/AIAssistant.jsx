@@ -4,7 +4,7 @@ import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
 import { Button, Select } from "../ui/primitives.jsx";
 import { round } from "../lib/nutrition.mjs";
-import { dayTotals, weekSummary, clientTarget as targetFor } from "../lib/planMath.mjs";
+import { dayTotals, weekSummary, effectiveTarget } from "../lib/planMath.mjs";
 import { aiRequest, trimHistory } from "../lib/ai.js";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
@@ -34,13 +34,14 @@ export default function AIAssistant() {
     setClientId(id); setMessages([]); setConvId(null); setCtx(null);
     if (!id) return;
     const { data: c } = await supabase.from("clients").select("*").eq("id", id).single();
-    const target = targetFor(c);
+    let target = effectiveTarget(null, c);
     // режим: финалната версия, иначе най-новата неархивирана → дневни суми (смята ги приложението, не моделът)
     let planAvg = null, microCoverage = null, perDay = null, planInfo = null;
     const { data: plan } = await supabase.from("plans").select("id").eq("client_id", id).order("created_at").limit(1).maybeSingle();
     if (plan) {
-      const { data: vers } = await supabase.from("plan_versions").select("id, version, status").eq("plan_id", plan.id).order("version", { ascending: false });
+      const { data: vers } = await supabase.from("plan_versions").select("id, version, status, targets").eq("plan_id", plan.id).order("version", { ascending: false });
       const ver = (vers || []).find((v) => v.status === "final") || (vers || []).find((v) => v.status !== "archived") || (vers || [])[0];
+      if (ver) target = effectiveTarget(ver.targets, c); // записаната от калкулатора цел на същата версия, ако има
       if (ver) {
         const { data: days } = await supabase.from("plan_days").select("weekday, plan_meals(name, position, plan_meal_items(qty, unit, snapshot, foods(micros)))").eq("version_id", ver.id).order("weekday");
         const seen = new Set(); const tree = (days || []).filter((d) => !seen.has(d.weekday) && seen.add(d.weekday));
@@ -78,7 +79,7 @@ export default function AIAssistant() {
     ];
     if (c) lines.push("\nВ момента нутриционистът е избрал ЕДИН клиент и всички секции по-долу са НЕГОВИТЕ данни, подадени от приложението. Името е скрито нарочно (минимизиране на данните) и в съобщенията се заменя с „[клиентът]“. Когато нутриционистът пише „клиента“, „режима му“, „[клиентът]“ или лично име, той има предвид точно този клиент — работи директно с данните по-долу и не казвай, че нямаш достъп до профила.");
     if (c) lines.push(`КЛИЕНТ (анонимизиран): пол ${c.sex || "?"}, възраст ${c.birth_date ? tg?.age : "неизвестна"}, тегло ${c.weight_kg || "?"} кг, ръст ${c.height_cm || "?"} см, активност ${c.activity_level || "?"}, цел ${c.main_goal || "?"}.`);
-    if (tg) lines.push(`ДАННИ — ДНЕВНИ ЦЕЛИ (ориентир от приложението): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.${tg.assumed?.length ? ` ВНИМАНИЕ: в профила липсва ${tg.assumed.join(", ")} — целите са по стойности по подразбиране и не са индивидуални; кажи го на нутрициониста.` : ""}`);
+    if (tg) lines.push(`ДАННИ — ДНЕВНИ ЦЕЛИ (${tg.source === "saved" ? "зададени от нутрициониста в калкулатора — това е целта на режима" : "ориентир от приложението по формула, не са зададени ръчно"}): ${round(tg.kcal)} kcal, протеин ${round(tg.protein_g)} g, въглехидрати ${round(tg.carbs_g)} g, мазнини ${round(tg.fat_g)} g.${tg.assumed?.length ? ` ВНИМАНИЕ: в профила липсва ${tg.assumed.join(", ")} — целите са по стойности по подразбиране и не са индивидуални; кажи го на нутрициониста.` : ""}`);
     if (cx?.planAvg) {
       const pi = cx.planInfo;
       lines.push(`ДАННИ — ТЕКУЩ РЕЖИМ (версия ${pi.version}, ${pi.status === "final" ? "финална" : "чернова"}; попълнени дни: ${pi.filledDays}/7) — средно/ден (÷7): ${round(cx.planAvg.kcal)} kcal, П ${round(cx.planAvg.protein_g)} / В ${round(cx.planAvg.carbs_g)} / М ${round(cx.planAvg.fat_g)}, фибри ${round(cx.planAvg.fiber_g)} g.`);
