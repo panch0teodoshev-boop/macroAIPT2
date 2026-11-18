@@ -4,6 +4,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input } from "../ui/primitives.jsx";
 import { round } from "../lib/nutrition.mjs";
 import { METRICS, validateMeasurement, seriesOf, trend, todayIso, isLatest } from "../lib/measurements.mjs";
+import { confirmDialog } from "../ui/dialogApi.js";
 
 const COLS = "id, measured_on, weight_kg, body_fat_pct, lean_mass_kg, skeletal_muscle_kg, waist_cm, created_at";
 const fmtDate = (iso) => { const [y, m, d] = iso.split("-"); return `${d}.${m}.${y}`; };
@@ -60,7 +61,7 @@ export default function Measurements({ client, onClose, onProfileUpdated }) {
   }
 
   async function remove(r) {
-    if (!confirm(`Да изтрия измерването от ${fmtDate(r.measured_on)}?`)) return;
+    if (!(await confirmDialog({ title: "Изтриване на измерване", message: `Да изтрия измерването от ${fmtDate(r.measured_on)}?`, confirmLabel: "Изтрий", danger: true }))) return;
     const { error } = await supabase.from("client_measurements").delete().eq("id", r.id);
     if (error) { setErr("Изтриването не успя: " + error.message); return; }
     setMsg(""); await load();

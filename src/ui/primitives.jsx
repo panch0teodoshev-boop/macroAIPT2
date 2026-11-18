@@ -1,7 +1,7 @@
 import React from "react";
 import { t, FONT } from "./theme.js";
 
-export function Button({ children, variant = "primary", style, ...p }) {
+export const Button = React.forwardRef(function Button({ children, variant = "primary", style, ...p }, ref) {
   const v = {
     primary: { background: t.coral, color: "#fff", border: "none" },
     teal: { background: t.tealDark, color: "#fff", border: "none" },
@@ -9,13 +9,13 @@ export function Button({ children, variant = "primary", style, ...p }) {
     danger: { background: "#fff", color: t.warn, border: `1px solid ${t.warn}` },
   }[variant];
   return (
-    <button {...p} style={{
+    <button ref={ref} {...p} style={{
       fontFamily: FONT, fontWeight: 700, fontSize: 14, padding: "10px 16px",
       borderRadius: 10, cursor: "pointer", display: "inline-flex", alignItems: "center",
       justifyContent: "center", gap: 8, ...v, ...style,
     }}>{children}</button>
   );
-}
+});
 
 export const inputStyle = {
   fontFamily: FONT, fontSize: 14, color: t.ink, border: `1px solid ${t.line}`,
@@ -32,7 +32,7 @@ export function Field({ label, children, hint }) {
   );
 }
 
-export function Input(props) { return <input {...props} style={{ ...inputStyle, ...props.style }} />; }
+export const Input = React.forwardRef(function Input(props, ref) { return <input ref={ref} {...props} style={{ ...inputStyle, ...props.style }} />; });
 
 export function Select({ value, onChange, options, style, ...rest }) {
   return (

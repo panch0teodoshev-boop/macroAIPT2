@@ -1,6 +1,7 @@
 // Експорт на седмичен режим: PDF (чрез печат) и Excel (.xlsx), без външни зависимости.
 import { round } from "./nutrition.mjs";
 import { MACRO_KEYS as MK, zero, itemTotals as itemTot, addInto, weekSummary } from "./planMath.mjs";
+import { alertDialog } from "../ui/dialogApi.js";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 const esc = (s) => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -63,7 +64,7 @@ export function exportPlanPDF({ tree, client, target, nutritionist }) {
   </body></html>`;
 
   const w = window.open("", "_blank");
-  if (!w) { alert("Разреши изскачащите прозорци, за да отпечаташ PDF."); return; }
+  if (!w) { alertDialog({ title: "Браузърът спря прозореца за печат", message: "Разреши изскачащите прозорци за този сайт и опитай отново." }); return; }
   w.document.write(html); w.document.close(); w.focus();
   setTimeout(() => w.print(), 350); // onload не се задейства надеждно след document.write във всички браузъри
 }

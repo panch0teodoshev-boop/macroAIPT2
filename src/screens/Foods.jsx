@@ -6,6 +6,7 @@ import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { scaleNutrients, sumNutrients, round } from "../lib/nutrition.mjs";
 import { servingsOf, parseQty } from "../lib/planMath.mjs";
+import { confirmDialog } from "../ui/dialogApi.js";
 
 const MACRO_KEYS = ["kcal", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "satfat_g"];
 const per100of = (f) => Object.fromEntries(MACRO_KEYS.map((k) => [k, f[k] == null || f[k] === "" ? null : Number(f[k])]));
@@ -104,7 +105,7 @@ function FoodForm({ ownerId, onClose, onSaved }) {
     // сверка: калориите от макросите (4/4/9) спрямо въведените — хваща грешки при въвеждане
     if (vals[1] != null && vals[2] != null && vals[3] != null) {
       const est = 4 * vals[1] + 4 * vals[2] + 9 * vals[3];
-      if (Math.abs(est - vals[0]) > Math.max(25, 0.25 * est) && !confirm(`Въведени са ${vals[0]} kcal, а от макросите излизат около ${Math.round(est)} kcal. Да запиша ли въпреки разликата?`)) return;
+      if (Math.abs(est - vals[0]) > Math.max(25, 0.25 * est) && !(await confirmDialog({ title: "Калориите не съвпадат с макросите", message: `Въведени са ${vals[0]} kcal, а от макросите излизат около ${Math.round(est)} kcal. Да запиша ли въпреки разликата?`, confirmLabel: "Запиши въпреки това", cancelLabel: "Ще проверя" }))) return;
     }
     setBusy(true); setErr("");
     const { error } = await supabase.from("foods").insert({
@@ -167,7 +168,7 @@ function Recipes() {
     return { totals, incomplete, per: Object.fromEntries(MACRO_KEYS.map((k) => [k, (totals[k] || 0) / s])) };
   };
   const remove = async (r) => {
-    if (!confirm(`Да изтрия рецептата „${r.name}"? Вече добавените в режими порции запазват стойностите си.`)) return;
+    if (!(await confirmDialog({ title: `Изтриване на „${r.name}"`, message: "Вече добавените в режими порции запазват стойностите си.", confirmLabel: "Изтрий рецептата", danger: true }))) return;
     const { error } = await supabase.from("recipes").delete().eq("id", r.id);
     if (error) { setErr(error.message.includes("plan_meal_items_check") ? "Рецептата се използва в режим и не може да се изтрие, докато не се приложи миграция 0004." : "Изтриването не успя: " + error.message); return; }
     setErr(""); load();

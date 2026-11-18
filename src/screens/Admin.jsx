@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase.js";
 import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
+import { confirmDialog } from "../ui/dialogApi.js";
 
 const STATUS = [
   { value: "invited", label: "Поканен" },
@@ -61,7 +62,7 @@ function Nutritionists() {
 
   async function setStatus(r, status) {
     if (r.id === profile.id) { setMsg("Не можеш да променяш собствения си статус."); return; }
-    if (status !== "active" && !confirm(`${r.email} ще загуби достъп до приложението. Продължаваме ли?`)) return;
+    if (status !== "active" && !(await confirmDialog({ title: "Спиране на достъпа", message: `${r.email} ще загуби достъп до приложението.`, confirmLabel: "Спри достъпа", danger: true }))) return;
     const { error } = await supabase.from("profiles").update({ status }).eq("id", r.id);
     if (error) { setMsg("Смяната на статуса не успя: " + error.message); return; }
     await logAction("set_status", r.email, { from: r.status, to: status });

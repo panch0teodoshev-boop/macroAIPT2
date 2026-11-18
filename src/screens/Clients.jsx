@@ -5,6 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { ageFromBirthDate } from "../lib/planMath.mjs";
 import Measurements from "./Measurements.jsx";
+import { confirmDialog } from "../ui/dialogApi.js";
 
 const GOALS = [
   { value: "reduction", label: "Редукция" },
@@ -45,7 +46,7 @@ export default function Clients({ onCalc, onPlan }) {
   const archivedCount = rows.filter((c) => c.archived).length;
 
   async function setArchived(c, archived) {
-    if (archived && !confirm(`Да архивирам ${c.first_name} ${c.last_name || ""}? Данните се запазват; клиентът се скрива от списъците.`)) return;
+    if (archived && !(await confirmDialog({ title: `Архивиране на ${c.first_name} ${c.last_name || ""}`.trim(), message: "Данните се запазват; клиентът се скрива от списъците. Може да го възстановиш по всяко време.", confirmLabel: "Архивирай" }))) return;
     const { error } = await supabase.from("clients").update({ archived }).eq("id", c.id);
     if (error) { setErr("Промяната не успя: " + error.message); return; }
     load();

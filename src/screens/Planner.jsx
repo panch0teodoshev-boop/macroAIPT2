@@ -8,6 +8,7 @@ import { round } from "../lib/nutrition.mjs";
 import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
+import { alertDialog, confirmDialog, promptDialog } from "../ui/dialogApi.js";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 const DAYS_SHORT = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
@@ -147,8 +148,8 @@ export default function Planner() {
   });
 
   const deleteVersion = guard(async () => {
-    if (!version || versions.length <= 1) { alert("Трябва да остане поне една версия."); return; }
-    if (!confirm(`Да изтрия версия ${version.version}${version.status === "final" ? " (ФИНАЛНА)" : ""}? Съдържанието ѝ ще се премахне безвъзвратно.`)) return;
+    if (!version || versions.length <= 1) { await alertDialog({ title: "Версията не може да се изтрие", message: "Трябва да остане поне една версия на режима." }); return; }
+    if (!(await confirmDialog({ title: `Изтриване на версия ${version.version}${version.status === "final" ? " (финална)" : ""}`, message: "Съдържанието ѝ ще се премахне безвъзвратно.", confirmLabel: "Изтрий версията", danger: true }))) return;
     setLoading(true);
     await run(supabase.from("plan_versions").delete().eq("id", version.id), "Изтриването на версията");
     const rest = versions.filter((v) => v.id !== version.id);
@@ -195,16 +196,16 @@ export default function Planner() {
 
   const addMeal = guard(async () => {
     if (!day || locked) return;
-    const name = (prompt("Име на храненето:", "Ново хранене") || "").trim().slice(0, 60); if (!name) return;
+    const name = await promptDialog({ title: "Ново хранене", label: "Име на храненето", defaultValue: "Ново хранене", maxLength: 60, confirmLabel: "Добави" }); if (!name) return;
     const pos = (day.plan_meals || []).reduce((a, m) => Math.max(a, m.position + 1), 0);
     await run(supabase.from("plan_meals").insert({ day_id: day.id, name, position: pos }), "Добавянето на хранене");
     await reload();
   });
-  const renameMeal = guard(async (m) => { if (locked) return; const name = (prompt("Преименувай:", m.name) || "").trim().slice(0, 60); if (name && name !== m.name) { await run(supabase.from("plan_meals").update({ name }).eq("id", m.id), "Преименуването"); await reload(); } });
+  const renameMeal = guard(async (m) => { if (locked) return; const name = await promptDialog({ title: "Преименуване на хранене", label: "Име на храненето", defaultValue: m.name, maxLength: 60 }); if (name && name !== m.name) { await run(supabase.from("plan_meals").update({ name }).eq("id", m.id), "Преименуването"); await reload(); } });
   const delMeal = guard(async (m) => {
     if (locked) return;
     const n = m.plan_meal_items?.length || 0;
-    if (n > 0 && !confirm(`Да изтрия „${m.name}" заедно с ${n} продукта в него?`)) return;
+    if (n > 0 && !(await confirmDialog({ title: `Изтриване на „${m.name}"`, message: `Храненето ще се изтрие заедно с ${n} продукта в него.`, confirmLabel: "Изтрий", danger: true }))) return;
     await run(supabase.from("plan_meals").delete().eq("id", m.id), "Изтриването на хранене"); await reload();
   });
   const delItem = guard(async (id) => { if (locked) return; await run(supabase.from("plan_meal_items").delete().eq("id", id), "Изтриването на продукт"); await reload(); });
@@ -219,7 +220,7 @@ export default function Planner() {
     const src = day; if (!src) return;
     const target = tree.find((d) => d.weekday === targetWeekday);
     const existing = (target?.plan_meals || []).reduce((a, m) => a + (m.plan_meal_items?.length || 0), 0);
-    if (existing > 0 && !confirm(`${DAYS[targetWeekday]} вече съдържа ${existing} продукта. Копирането ще ги ЗАМЕНИ. Продължаваме ли?`)) return;
+    if (existing > 0 && !(await confirmDialog({ title: `Копиране в ${DAYS[targetWeekday]}`, message: `${DAYS[targetWeekday]} вече съдържа ${existing} продукта. Копирането ще ги замени.`, confirmLabel: "Замени", danger: true }))) return;
     const td = await run(supabase.from("plan_days").select("id").eq("version_id", version.id).eq("weekday", targetWeekday).limit(1).single(), "Намирането на целевия ден");
     // Първо записваме копието, после махаме старото съдържание → при прекъсване няма загуба на данни.
     const oldMeals = await run(supabase.from("plan_meals").select("id").eq("day_id", td.id), "Четенето на целевия ден");

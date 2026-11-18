@@ -45,7 +45,7 @@ async function setup({ viewport = { width: 1280, height: 900 }, seed } = {}) {
   await be.install(context);
   const page = await context.newPage();
   const errors = []; page.on("pageerror", (e) => errors.push(e.message));
-  page.on("dialog", (d) => { page._dialogs = [...(page._dialogs || []), d.message()]; d.type() === "prompt" ? d.accept(page._promptAnswer ?? "") : page._dismissNext ? (page._dismissNext = false, d.dismiss()) : d.accept(); });
+  page.on("dialog", (d) => { errors.push("системен диалог: " + d.message()); d.dismiss(); }); // приложението вече не ползва alert/confirm/prompt
   return { be, context, page, errors, ids };
 }
 async function login(page, email = "nut@test.local", password = "parola123") {
@@ -53,6 +53,15 @@ async function login(page, email = "nut@test.local", password = "parola123") {
   await page.getByLabel("Имейл").fill(email);
   await page.getByLabel("Парола").fill(password);
   await page.getByRole("button", { name: "Вход" }).click();
+}
+// собствен диалог на приложението: записва текста, по желание попълва поле и потвърждава/отказва
+async function answer(page, { accept = true, text } = {}) {
+  const dlg = page.locator('[role="alertdialog"], [role="dialog"][aria-modal="true"]').last();
+  await dlg.waitFor();
+  page._dialogs = [...(page._dialogs || []), await dlg.innerText()];
+  if (text != null) await dlg.getByRole("textbox").fill(text);
+  await dlg.getByRole("button").nth(accept ? -1 : 0).click();
+  await dlg.waitFor({ state: "detached" });
 }
 const nav = (page, name) => page.getByRole("navigation").getByRole("button", { name, exact: true }).click();
 const addClient = (be, ids, extra = {}) => { const c = { id: be.uuid(), nutritionist_id: ids.nutId, first_name: "Мария", last_name: "Иванова", sex: "female", birth_date: "1986-01-01", height_cm: 168, weight_kg: 65, main_goal: "reduction", activity_level: "moderate", allergies: "ядки", private_notes: "поверителна бележка XYZ", archived: false, created_at: "2026-02-01", ...extra }; be.db.clients.push(c); return c; };
@@ -121,6 +130,7 @@ test("клиенти: валидиране, създаване, редакция
   assert.equal(row.birth_date, "1990-05-20"); assert.equal(row.nutritionist_id, be.db.profiles[0].id);
   // архивиране → изчезва от списъка, данните остават
   await page.getByRole("button", { name: "Архивирай" }).click();
+  await answer(page);
   await page.getByText("Няма клиенти по тези критерии.").waitFor();
   assert.equal(be.db.clients.find((c) => c.first_name === "Иван").archived, true);
   assert.deepEqual(errors, []); await context.close();
@@ -181,6 +191,39 @@ test("планер: добавяне, грамажи, преизчисляван
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("собствени диалози: ново хранене (Enter), отказ с Escape, празно име не се приема, преименуване, телефон", async () => {
+  const { page, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  // Escape → отказ, нищо не се добавя
+  await page.getByRole("button", { name: "+ Хранене" }).click();
+  const dlg = page.getByRole("dialog", { name: "Ново хранене" });
+  await dlg.waitFor();
+  const box = dlg.getByRole("textbox", { name: "Име на храненето" });
+  assert.equal(await box.inputValue(), "Ново хранене");
+  assert.equal(await box.evaluate((el) => el === document.activeElement), true, "полето е на фокус");
+  await page.keyboard.press("Escape"); await dlg.waitFor({ state: "detached" });
+  assert.equal(await page.getByRole("button", { name: "Преименувай Ново хранене" }).count(), 0);
+  // празно име → бутонът е неактивен
+  await page.getByRole("button", { name: "+ Хранене" }).click();
+  await box.fill("   ");
+  assert.equal(await dlg.getByRole("button", { name: "Добави" }).isDisabled(), true);
+  // Enter записва
+  await box.fill("Следобедна закуска"); await box.press("Enter");
+  await dlg.waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Преименувай Следобедна закуска" }).click();
+  await answer(page, { text: "Подкрепителна" });
+  await page.getByRole("button", { name: "Преименувай Подкрепителна" }).waitFor();
+  // телефон: диалогът се побира в екрана
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.getByRole("button", { name: "+ Хранене" }).click();
+  const r = await page.getByRole("dialog", { name: "Ново хранене" }).locator("div").first().boundingBox();
+  const bb = await page.getByRole("dialog", { name: "Ново хранене" }).boundingBox();
+  assert.ok(bb.x >= 0 && bb.x + bb.width <= 375, `диалогът е в екрана: ${JSON.stringify(bb)} ${JSON.stringify(r)}`);
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/dialog-mobile.png" });
+  await page.getByRole("button", { name: "Отказ" }).click();
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("планер: копиране на ден (с потвърждение при презаписване) и изтриване на хранене", async () => {
   const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);
@@ -196,13 +239,13 @@ test("планер: копиране на ден (с потвърждение п
   await page.getByText(/Общо за деня: 555 kcal/).waitFor();
   await page.getByRole("button", { name: /Понеделник\s*295 kcal/ }).click();
   // второ копиране върху непразен ден → пита; отказ не променя нищо
-  page._dismissNext = true;
   await page.locator("select", { hasText: "Копирай деня в…" }).selectOption({ label: "Вторник" });
-  await page.waitForFunction(() => true); await page.waitForTimeout(300);
+  await answer(page, { accept: false });
   assert.match(page._dialogs.at(-1), /Вторник вече съдържа 2 продукта/);
   await page.getByRole("button", { name: /Вторник\s*555 kcal/ }).waitFor();
   // изтриване на хранене с продукти → пита; потвърждаваме
   await page.getByRole("button", { name: "Изтрий хранене Закуска" }).click();
+  await answer(page);
   await page.getByText(/Общо за деня: 130 kcal/).waitFor();
   assert.match(page._dialogs.at(-1), /заедно с 1 продукта/);
   assert.deepEqual(errors, []); await context.close();
@@ -443,6 +486,7 @@ test("мерки: въвеждане, валидиране, профилът с�
   await dlg.getByText(/Едно измерване \(80 см на 01.10.2026\)/).waitFor();
   // изтриване
   await dlg.getByRole("button", { name: "Изтрий измерването от 01.09.2026" }).click();
+  await answer(page);
   await dlg.getByRole("tab", { name: "Тегло · 2" }).waitFor();
   assert.equal(be.db.client_measurements.length, 2);
   await dlg.getByRole("button", { name: "Затвори" }).click();
