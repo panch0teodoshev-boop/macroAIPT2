@@ -9,6 +9,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { join, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createBackend } from "./fakeBackend.mjs";
+import { TERMS_VERSION } from "../../src/legal/terms.js";
 
 const { chromium } = createRequire(import.meta.url)("playwright");
 const DIST = join(dirname(fileURLToPath(import.meta.url)), "..", "..", "dist-e2e");
@@ -31,7 +32,7 @@ const CHICKEN = { name_bg: "Пилешко филе", name_en: "Chicken breast",
 const RICE = { name_bg: "Ориз", name_en: "Rice", unit: "100g", kcal: 130, protein_g: 2.7, carbs_g: 28, fat_g: 0.3, fiber_g: 0.4, micros: {} };
 const PARTIAL = { name_bg: "Непълна храна", name_en: null, unit: "100g", kcal: 50, protein_g: null, carbs_g: null, fat_g: null, fiber_g: null, micros: {} };
 
-async function setup({ viewport = { width: 1280, height: 900 }, seed } = {}) {
+async function setup({ viewport = { width: 1280, height: 900 }, seed, terms = true } = {}) {
   const be = createBackend();
   const nutId = be.addUser("nut@test.local", "parola123", { full_name: "Тест Нутриционист" });
   const otherId = be.addUser("other@test.local", "parola123", { full_name: "Друг Нутриционист" });
@@ -40,6 +41,8 @@ async function setup({ viewport = { width: 1280, height: 900 }, seed } = {}) {
   for (const f of [CHICKEN, RICE, PARTIAL]) be.db.foods.push({ id: be.uuid(), owner_id: null, archived: false, ...f });
   be.db.clients.push({ id: be.uuid(), nutritionist_id: otherId, first_name: "ЧуждКлиент", last_name: "Тайнов", archived: false, created_at: "2026-01-01" });
   const ids = { nutId, otherId, adminId };
+  // по подразбиране всички са приели текущите Общи условия (отделен тест проверява екрана за приемане)
+  if (terms) for (const p of be.db.profiles) be.db.terms_acceptances.push({ id: be.db.terms_acceptances.length + 1, user_id: p.id, version: TERMS_VERSION, accepted_at: "2026-11-18T10:00:00Z" });
   if (seed) seed(be, ids);
   const context = await browser.newContext({ viewport, locale: "bg-BG" });
   await be.install(context);
@@ -133,6 +136,50 @@ test("админ: покана по имейл създава активен п�
   await p2.getByText("Добре дошъл! Задай парола за акаунта си").waitFor();
   await p2.getByRole("button", { name: "Задай паролата" }).waitFor();
   assert.deepEqual(errors, []); await context.close();
+});
+
+test("Общи условия: публична страница; задължително приемане при първо влизане; нова версия се иска отново; отказ → изход", async () => {
+  // публична страница без вход
+  let s = await setup({ terms: false });
+  await s.page.goto(BASE + "terms");
+  await s.page.getByRole("heading", { name: "Общи условия за ползване на ProNutrition" }).waitFor();
+  await s.page.getByText("Панайот Георгиев Теодошев, физическо лице").waitFor();
+  await s.page.getByRole("heading", { name: "5. Правила за ползване на AI асистента" }).waitFor();
+  // линк от екрана за вход
+  await s.page.goto(BASE);
+  assert.equal(await s.page.getByRole("link", { name: "Общи условия за ползване" }).getAttribute("href"), "/terms");
+  // първо влизане → екран за приемане; без отметка не може
+  await login(s.page);
+  await s.page.getByText("Преди да продължиш").waitFor();
+  if (process.env.SHOT_DIR) { await s.page.setViewportSize({ width: 390, height: 800 }); await s.page.screenshot({ path: process.env.SHOT_DIR + "/terms-accept-mobile.png" }); await s.page.setViewportSize({ width: 1280, height: 900 }); }
+  const go = s.page.getByRole("button", { name: "Приемам и продължавам" });
+  assert.equal(await go.isDisabled(), true);
+  assert.equal(await s.page.getByRole("navigation").count(), 0, "без приемане няма достъп до приложението");
+  await s.page.getByLabel(/Прочетох и приемам Общите условия/).check();
+  await go.click();
+  await s.page.getByText("Здравей, Тест Нутриционист").waitFor();
+  const acc = s.be.db.terms_acceptances.filter((a) => a.user_id === s.ids.nutId);
+  assert.equal(acc.length, 1); assert.equal(acc[0].version, TERMS_VERSION);
+  // повторно влизане → не пита отново
+  await s.page.reload(); await s.page.getByText("Здравей, Тест Нутриционист").waitFor();
+  // админ панел показва кой е приел
+  await s.context.close();
+  s = await setup({ terms: false, seed: (be, ids) => {
+    be.db.terms_acceptances.push({ id: 1, user_id: ids.adminId, version: TERMS_VERSION, accepted_at: "2026-11-18T10:00:00Z" });
+    be.db.terms_acceptances.push({ id: 2, user_id: ids.otherId, version: "стара-версия", accepted_at: "2026-01-01T10:00:00Z" });
+  } });
+  await login(s.page, "admin@test.local"); await nav(s.page, "Админ панел");
+  const row = (email) => s.page.locator("tr", { hasText: email });
+  await row("admin@test.local").getByText(/✓ 18\.11\.2026/).waitFor();
+  assert.match(await row("nut@test.local").innerText(), /—/);
+  await s.context.close();
+  // приета стара версия → „Общите условия са променени“; „Изход“ връща към входа
+  s = await setup({ terms: false, seed: (be, ids) => be.db.terms_acceptances.push({ id: 1, user_id: ids.otherId, version: "стара-версия", accepted_at: "2026-01-01T10:00:00Z" }) });
+  await login(s.page, "other@test.local");
+  await s.page.getByText("Общите условия са променени").waitFor();
+  await s.page.getByRole("button", { name: "Изход" }).click();
+  await s.page.getByRole("button", { name: "Вход" }).waitFor();
+  assert.deepEqual(s.errors, []); await s.context.close();
 });
 
 test("клиенти: валидиране, създаване, редакция, архивиране; чужд клиент не се вижда", async () => {

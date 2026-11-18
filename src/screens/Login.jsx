@@ -61,6 +61,7 @@ export default function Login() {
           </form>
         )}
       </Card>
+      <a href="/terms" style={{ display: "block", textAlign: "center", marginTop: 14, color: t.muted, fontSize: 12.5 }}>Общи условия за ползване</a>
     </div>
   );
 }

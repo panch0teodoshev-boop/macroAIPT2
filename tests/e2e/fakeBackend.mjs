@@ -17,7 +17,7 @@ const CASCADE = { clients: [["plans", "client_id"], ["client_measurements", "cli
 export function createBackend() {
   const db = {
     profiles: [], clients: [], client_measurements: [], foods: [], recipes: [], recipe_ingredients: [], plans: [], plan_versions: [],
-    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [], erasure_log: [],
+    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [], erasure_log: [], terms_acceptances: [],
   };
   const users = {}; // email → {id, password}
   const state = { failNext: null, aiCalls: [], invites: [], aiReply: "Примерен отговор.", aiStatus: 200, requests: [] };
@@ -120,6 +120,7 @@ export function createBackend() {
       if (!me || me.status !== "active") return table === "profiles" && r.id === sub;
       if (table === "profiles") return r.id === sub || me.role === "super_admin";
       if (table === "clients" || table === "plans" || table === "ai_conversations" || table === "erasure_log") return r.nutritionist_id === sub;
+      if (table === "terms_acceptances") return r.user_id === sub || me.role === "super_admin";
       if (table === "foods") return r.owner_id == null || r.owner_id === sub;
       if (table === "recipes") return r.owner_id === sub || db.profiles.find((p) => p.id === r.owner_id)?.role === "super_admin";
       return true;

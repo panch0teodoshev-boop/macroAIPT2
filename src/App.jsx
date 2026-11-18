@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { AuthProvider, useAuth } from "./context/Auth.jsx";
 import { t, FONT } from "./ui/theme.js";
 import { Button, Card } from "./ui/primitives.jsx";
@@ -14,6 +14,9 @@ import AIAssistant from "./screens/AIAssistant.jsx";
 import Settings from "./screens/Settings.jsx";
 import Admin from "./screens/Admin.jsx";
 import { ageFromBirthDate } from "./lib/planMath.mjs";
+import { supabase } from "./lib/supabase.js";
+import { TermsPage, AcceptTerms } from "./screens/Terms.jsx";
+import { TERMS_VERSION } from "./legal/terms.js";
 
 const NAV = [
   { id: "dashboard", label: "Dashboard" },
@@ -31,6 +34,16 @@ function Shell() {
   const [view, setView] = useState("dashboard");
   const [menuOpen, setMenuOpen] = useState(false);
   const [calcInitial, setCalcInitial] = useState(null);
+  // Общи условия: null = проверява се; "ok"; "need" / "changed" (приета е стара версия); "error"
+  const [terms, setTerms] = useState(null);
+  const uid = session?.user?.id, active = profile?.status === "active";
+  async function checkTerms() {
+    setTerms(null);
+    const { data, error } = await supabase.from("terms_acceptances").select("version").eq("user_id", uid);
+    if (error) { setTerms("error"); return; }
+    setTerms((data || []).some((r) => r.version === TERMS_VERSION) ? "ok" : (data || []).length ? "changed" : "need");
+  }
+  useEffect(() => { if (uid && active && !recovery) checkTerms(); }, [uid, active, recovery]);
 
   if (loading) return <Center>Зареждане…</Center>;
   if (recovery) return <ResetPassword />;
@@ -49,6 +62,16 @@ function Shell() {
       <Button variant="ghost" onClick={signOut}>Изход</Button>
     </Card>
   </Center>;
+
+  if (terms === null) return <Center>Зареждане…</Center>;
+  if (terms === "error") return <Center>
+    <Card style={{ maxWidth: 420, textAlign: "center" }}>
+      <div style={{ color: t.warn, fontWeight: 700, marginBottom: 6 }}>Не можахме да проверим приемането на Общите условия</div>
+      <div style={{ color: t.muted, fontSize: 14, marginBottom: 12 }}>Провери връзката и опитай отново.</div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "center" }}><Button onClick={checkTerms}>Опитай пак</Button><Button variant="ghost" onClick={signOut}>Изход</Button></div>
+    </Card>
+  </Center>;
+  if (terms !== "ok") return <AcceptTerms previous={terms === "changed"} onAccepted={() => setTerms("ok")} />;
 
   const nav = profile.role === "super_admin" ? [{ id: "admin", label: "Админ панел" }, ...NAV] : NAV;
   const goto = (id) => { setCalcInitial(null); setView(id); setMenuOpen(false); };
@@ -75,6 +98,7 @@ function Shell() {
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.15)", paddingTop: 12, marginTop: 12, fontSize: 12.5 }}>
         <div style={{ opacity: 0.85, marginBottom: 8, wordBreak: "break-word" }}>{profile.full_name || profile.email}</div>
         <button onClick={signOut} style={{ background: "transparent", border: "1px solid rgba(255,255,255,0.3)", color: "#fff", borderRadius: 8, padding: "6px 10px", cursor: "pointer", fontFamily: FONT, fontSize: 12.5 }}>Изход</button>
+        <a href="/terms" target="_blank" rel="noopener" style={{ display: "block", marginTop: 10, color: "rgba(255,255,255,0.7)", fontSize: 12 }}>Общи условия</a>
       </div>
     </>
   );
@@ -124,5 +148,6 @@ function Center({ children }) {
 }
 
 export default function App() {
+  if (typeof window !== "undefined" && window.location.pathname.replace(/\/+$/, "") === "/terms") return <TermsPage />;
   return <AuthProvider><Shell /></AuthProvider>;
 }

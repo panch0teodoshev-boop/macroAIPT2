@@ -5,6 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { confirmDialog } from "../ui/dialogApi.js";
 import { inviteNutritionist } from "../lib/ai.js";
+import { TERMS_VERSION, TERMS_EFFECTIVE } from "../legal/terms.js";
 
 const STATUS = [
   { value: "invited", label: "Поканен" },
@@ -37,6 +38,7 @@ function Nutritionists() {
   const { profile } = useAuth();
   const [rows, setRows] = useState([]);
   const [counts, setCounts] = useState({});
+  const [terms, setTerms] = useState(null); // user_id → дата на приемане на текущата версия; null = няма данни
   const [loading, setLoading] = useState(true);
   const [adding, setAdding] = useState(false);
   const [msg, setMsg] = useState("");
@@ -51,6 +53,8 @@ function Nutritionists() {
     const { data: cc, error: ce } = await supabase.rpc("admin_client_counts");
     if (ce) setCounts(null);
     else { const map = {}; (cc || []).forEach((r) => (map[r.nutritionist_id] = Number(r.active_clients))); setCounts(map); }
+    const { data: ta, error: te } = await supabase.from("terms_acceptances").select("user_id, accepted_at").eq("version", TERMS_VERSION);
+    if (te) setTerms(null); else setTerms(Object.fromEntries((ta || []).map((x) => [x.user_id, x.accepted_at])));
     setLoading(false);
   }
   useEffect(() => { load(); }, []);
@@ -89,7 +93,7 @@ function Nutritionists() {
         <div style={{ overflowX: "auto" }}>
           <table style={{ width: "100%", minWidth: 640, borderCollapse: "collapse", fontSize: 13.5 }}>
             <thead><tr style={{ background: t.tealDark, color: "#fff", textAlign: "left" }}>
-              <th style={th}>Име / имейл</th><th style={th}>Роля</th><th style={th}>Статус</th><th style={thC}>Клиенти</th><th style={thC}>Лимит</th><th style={th}>Действия</th>
+              <th style={th}>Име / имейл</th><th style={th}>Роля</th><th style={th}>Статус</th><th style={thC}>Клиенти</th><th style={thC}>Лимит</th><th style={thC} title={`Общи условия, версия ${TERMS_EFFECTIVE}`}>ОУ</th><th style={th}>Действия</th>
             </tr></thead>
             <tbody>
               {rows.map((r, i) => (
@@ -101,6 +105,7 @@ function Nutritionists() {
                   <td style={tdC}>
                     <input type="number" min={0} step={1} aria-label={`Лимит клиенти за ${r.email}`} key={`${r.id}:${r.client_limit}`} defaultValue={r.client_limit ?? ""} placeholder="∞" onBlur={(e) => { const v = e.target.value === "" ? null : Number(e.target.value); if (v !== r.client_limit) setLimit(r, v); }} style={{ width: 60, textAlign: "center", border: `1px solid ${t.line}`, borderRadius: 6, padding: "4px" }} />
                   </td>
+                  <td style={{ ...tdC, fontSize: 12.5, color: terms?.[r.id] ? t.good : t.muted }} title={terms ? (terms[r.id] ? "Приети на " + new Date(terms[r.id]).toLocaleString("bg-BG") : "Още не е приел текущата версия") : "Нужна е миграция 0007"}>{terms ? (terms[r.id] ? "✓ " + new Date(terms[r.id]).toLocaleDateString("bg-BG") : "—") : "?"}</td>
                   <td style={td}>
                     {r.role !== "super_admin" && <Select value={r.status} onChange={(v) => setStatus(r, v)} style={{ width: "auto", padding: "4px 8px", fontSize: 12.5 }} options={STATUS} />}
                   </td>
