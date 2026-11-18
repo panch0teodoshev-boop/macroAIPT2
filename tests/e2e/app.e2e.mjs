@@ -344,13 +344,24 @@ test("AI чернова с храни извън базата: валидира�
   // ориз 150 g = 195 (от базата, не 999); киноа 150 g = 180 + 100 g = 120 → 495
   await page.getByText(/Общо за деня: 495 kcal/).waitFor();
   assert.equal(await page.getByText("AI стойности").count(), 2);
-  // без отметката: старото поведение (само база) и промптът го казва
-  be.state.aiReply = () => JSON.stringify({ days: [{ weekday: 0, meals: [{ name: "Обяд", items: [{ food: "Киноа, сварена", grams: 150, new: true, per100g: { kcal: 120, protein_g: 4.4, carbs_g: 21.3, fat_g: 1.9 } }] }] }] });
+  // добавената храна се вижда веднага в търсенето (без презареждане на страницата)
+  await page.getByRole("button", { name: "+ Добави продукт / рецепта" }).first().click();
+  await page.getByPlaceholder("Търси…").fill("Кино");
+  await page.getByRole("button", { name: /^Киноа, сварена/ }).waitFor();
+  await page.getByRole("button", { name: "Затвори" }).click();
+  // без отметката: само база — киноата вече е в базата → добавя се със стойностите от базата, без маркировка
+  be.state.aiReply = () => JSON.stringify({ days: [{ weekday: 1, meals: [{ name: "Обяд", items: [{ food: "Киноа, сварена", grams: 100 }, { food: "Авокадо", grams: 100, new: true, per100g: { kcal: 160, protein_g: 2, carbs_g: 8.5, fat_g: 14.7 } }] }] }] });
   await page.getByRole("button", { name: "✨ AI чернова" }).click();
   await page.locator("select", { hasText: "Цяла седмица" }).selectOption({ label: "Само Понеделник" });
+  await page.getByLabel("Замести съществуващото съдържание в избраните дни").uncheck();
   await page.getByRole("button", { name: "Генерирай" }).click();
-  await page.getByText(/1 предложени храни не бяха намерени.*Киноа/).waitFor();
+  await page.getByText(/Добавени 1 продукта в 1 ден/).waitFor();
+  await page.getByText(/1 предложени храни не бяха намерени.*Авокадо/).waitFor();
   assert.match(JSON.stringify(be.state.aiCalls[1].body), /Използвай САМО храни от предоставения списък/);
+  assert.match(JSON.stringify(be.state.aiCalls[1].body), /Киноа, сварена: 120k/, "новата храна е в списъка към AI");
+  await page.getByRole("button", { name: "Готово" }).click();
+  await page.getByText(/Общо за деня: 615 kcal/).waitFor();                        // 495 + 120 (от базата)
+  assert.equal(await page.getByText("AI стойности").count(), 2, "новият ред е от базата, без маркировка");
   assert.deepEqual(errors, []); await context.close();
 });
 
@@ -500,6 +511,33 @@ test("мащабиране към цел: преглед, нова чернов�
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("смяна на изгледа (завъртане) не затваря прозорци и не губи въведеното; грешка при зареждане на храните", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor();
+  await nav(page, "Моите клиенти");
+  await page.getByRole("main").getByRole("button", { name: "Мерки", exact: true }).click();
+  await page.getByLabel("Тегло (кг)", { exact: true }).fill("71.5");
+  for (const width of [375, 900, 1280]) {               // телефон → таблет → десктоп
+    await page.setViewportSize({ width, height: 800 });
+    assert.equal(await page.getByLabel("Тегло (кг)", { exact: true }).inputValue(), "71.5", `стойността се пази при ${width}px`);
+  }
+  await page.getByRole("button", { name: "Затвори" }).click();
+  // търсене на продукт: заявката за храни пропада → видима грешка и „Опитай пак"
+  await openPlanner(page);
+  be.state.failNext = (method, url) => method === "GET" && url.pathname.endsWith("/foods") && "keep";
+  await page.getByRole("button", { name: "+ Добави продукт / рецепта" }).first().click();
+  await page.getByText(/Храните не можаха да се заредят/).waitFor();
+  be.state.failNext = null;                              // връзката се възстановява
+  await page.getByRole("button", { name: "Опитай пак" }).click();
+  await page.getByText(/Храните не можаха да се заредят/).waitFor({ state: "detached" });
+  await page.getByPlaceholder("Търси…").fill("несъществуващо");
+  await page.getByText(/Няма продукт с „несъществуващо/).waitFor();
+  await page.getByPlaceholder("Търси…").fill("Пиле");
+  await page.getByRole("button", { name: /^Пилешко филе/ }).click();
+  await page.getByText(/Общо за деня: 165 kcal/).waitFor();
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("шаблони: запазване на ден и седмица, прилагане (добавяне/замяна/нова чернова), изтрит продукт, изтриване", async () => {
   const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);
@@ -558,7 +596,7 @@ test("шаблони: запазване на ден и седмица, прил
   assert.equal(be.db.plan_templates.length, 1);
   if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/templates-desktop.png" });
   await page.setViewportSize({ width: 375, height: 740 });
-  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByText("Седмица А").waitFor(); // прозорецът остава отворен при смяна на изгледа
   const bb = await modal().boundingBox();
   assert.ok(bb.x >= 0 && bb.x + bb.width <= 375, "шаблоните се побират на телефон");
   if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/templates-mobile.png" });
@@ -640,11 +678,13 @@ test("мерки: въвеждане, валидиране, профилът с�
   if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/meas-mobile.png" });
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 376), "без хоризонтално преливане на 375 px");
   // графиката и текстът над нея се побират в картата (таблицата може да се превърта сама)
-  const fits = await page.evaluate(() => {
+  const fitsFn = () => {
     const card = document.querySelector("h3").closest("div[style*='max-width']") || document.querySelector("h3").parentElement.parentElement;
     const cr = card.getBoundingClientRect(); const svg = document.querySelector("svg[role=img]").getBoundingClientRect();
     return svg.right <= cr.right + 0.5 && svg.width > 200;
-  });
+  };
+  // графиката преизчислява ширината си след ResizeObserver → изчакваме кратко, вместо да мерим веднага
+  const fits = await page.waitForFunction(fitsFn, null, { timeout: 3000 }).then(() => true, () => false);
   assert.ok(fits, "графиката е в рамките на картата на 375 px");
   assert.deepEqual(errors, []); await context.close();
 });

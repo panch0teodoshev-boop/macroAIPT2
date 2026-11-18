@@ -65,7 +65,7 @@ export function createBackend() {
     const req = route.request(); const url = new URL(req.url()); const method = req.method();
     if (method === "OPTIONS") return route.fulfill({ status: 204, headers: cors });
     state.requests.push(`${method} ${url.pathname}`);
-    if (state.failNext && state.failNext(method, url)) { state.failNext = null; return route.abort("internetdisconnected"); }
+    if (state.failNext) { const f = state.failNext(method, url); if (f) { if (f !== "keep") state.failNext = null; return route.abort("internetdisconnected"); } } // "keep" = трайно прекъсване (клиентът може да повтаря заявката)
 
     // ---------- AI прокси ----------
     if (req.url().startsWith(AI)) {

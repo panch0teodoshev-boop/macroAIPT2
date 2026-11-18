@@ -30,6 +30,8 @@ export default function Planner() {
   const [picker, setPicker] = useState(null); // {mealId}
   const [foods, setFoods] = useState([]);
   const [recipes, setRecipes] = useState([]);
+  const [catalogErr, setCatalogErr] = useState("");
+  const [catalogReady, setCatalogReady] = useState(false);
   const [showShop, setShowShop] = useState(false);
   const [showMicro, setShowMicro] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
@@ -55,9 +57,22 @@ export default function Planner() {
       let last = null; try { last = localStorage.getItem("pn.planner.client"); } catch { /* няма достъп */ }
       if (last && (data || []).some((c) => c.id === last)) openClient(last);
     });
-    supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g").eq("archived", false).order("name_bg").limit(2000).then(({ data }) => setFoods(data || []));
-    supabase.from("recipes").select("id, name, servings, recipe_ingredients(qty, unit, snapshot)").then(({ data }) => setRecipes(data || []));
+    loadCatalog();
   }, []);
+
+  // Храни и рецепти за търсенето и AI. Презарежда се при отваряне на търсенето / AI черновата,
+  // за да се виждат и храни, добавени междувременно (напр. от AI черновата или в друг раздел).
+  async function loadCatalog() {
+    const [f, r] = await Promise.all([
+      supabase.from("foods").select("id, name_bg, name_en, unit, kcal, protein_g, carbs_g, fat_g, fiber_g").eq("archived", false).order("name_bg").limit(5000),
+      supabase.from("recipes").select("id, name, servings, recipe_ingredients(qty, unit, snapshot)"),
+    ]);
+    if (!f.error) setFoods(f.data || []);
+    if (!r.error) setRecipes(r.data || []);
+    const e = f.error || r.error;
+    setCatalogErr(e ? `${f.error ? "Храните" : "Рецептите"} не можаха да се заредят (${e.message}). Провери връзката и опитай отново.` : "");
+    setCatalogReady(true);
+  }
 
   const openClient = guard(async (id) => {
     setClientId(id); setDayIdx(0); setErr("");
@@ -384,7 +399,7 @@ export default function Planner() {
         <h2 style={{ margin: 0, color: t.ink }}>Седмичен режим</h2>
         <Select value={clientId} onChange={openClient} style={{ width: "auto", minWidth: 200 }} options={clients.map((c) => ({ value: c.id, label: `${c.first_name} ${c.last_name || ""}` }))} />
         <div style={{ flex: 1 }} />
-        {!locked && <Button onClick={() => setShowAI(true)}>✨ AI чернова</Button>}
+        {!locked && <Button onClick={() => { setShowAI(true); loadCatalog(); }}>✨ AI чернова</Button>}
         <Button variant="ghost" onClick={() => setShowMicro(true)}>Микронутриенти</Button>
         <Button variant="ghost" onClick={() => setShowShop(true)}>Списък за пазар</Button>
         <Button variant="ghost" onClick={() => exportPlanPDF({ tree, client, target, nutritionist: profileName })}>PDF</Button>
@@ -506,7 +521,7 @@ export default function Planner() {
                     </div>
                   );
                 })}
-                {!locked && <button onClick={() => setPicker({ mealId: m.id })} style={{ width: "100%", border: "none", background: t.tealPale, color: t.tealDark, fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, padding: "10px", cursor: "pointer" }}>+ Добави продукт / рецепта</button>}
+                {!locked && <button onClick={() => { setPicker({ mealId: m.id }); loadCatalog(); }} style={{ width: "100%", border: "none", background: t.tealPale, color: t.tealDark, fontFamily: "inherit", fontWeight: 700, fontSize: 13.5, padding: "10px", cursor: "pointer" }}>+ Добави продукт / рецепта</button>}
               </Card>
             );
           })}
@@ -518,7 +533,7 @@ export default function Planner() {
         </>
       )}
 
-      {picker && <ItemPicker foods={foods} recipes={recipes} onClose={() => setPicker(null)} onAdd={guard(async (payload) => {
+      {picker && <ItemPicker foods={foods} recipes={recipes} error={catalogErr} ready={catalogReady} onRetry={loadCatalog} onClose={() => setPicker(null)} onAdd={guard(async (payload) => {
         const mealId = picker.mealId; setPicker(null);
         await run(supabase.from("plan_meal_items").insert({ meal_id: mealId, ...payload }), "Добавянето на продукт");
         await reload();
@@ -537,7 +552,7 @@ export default function Planner() {
         }} />}
       {showCompare && <CompareVersions versions={versions} current={version} client={client} onClose={() => setShowCompare(false)} />}
       {showMicro && <MicroAnalysis tree={tree} client={client} onClose={() => setShowMicro(false)} />}
-      {showAI && <AIGenerate foods={foods} client={client} target={target} dayIdx={dayIdx} onApply={applyAIPlan} onClose={() => setShowAI(false)} />}
+      {showAI && <AIGenerate foods={foods} client={client} target={target} dayIdx={dayIdx} onApply={applyAIPlan} onCatalogChanged={loadCatalog} catalogErr={catalogErr} onClose={() => setShowAI(false)} />}
     </div>
   );
 }
@@ -564,7 +579,7 @@ function QtyInput({ value, disabled, onCommit, label }) {
   );
 }
 
-function ItemPicker({ foods, recipes, onClose, onAdd }) {
+function ItemPicker({ foods, recipes, error, ready, onRetry, onClose, onAdd }) {
   const [mode, setMode] = useState("food");
   const [q, setQ] = useState("");
   const foundF = q.trim() ? foods.filter((f) => (f.name_bg + " " + (f.name_en || "")).toLowerCase().includes(q.trim().toLowerCase())).slice(0, 12) : foods.slice(0, 12);
@@ -575,6 +590,19 @@ function ItemPicker({ foods, recipes, onClose, onAdd }) {
         {[["food", "Продукт"], ["recipe", "Рецепта"]].map(([id, l]) => <button key={id} onClick={() => setMode(id)} style={{ border: "none", cursor: "pointer", borderRadius: 8, padding: "6px 14px", fontWeight: 700, fontSize: 13, background: mode === id ? "#fff" : "transparent", color: mode === id ? t.tealDark : t.muted }}>{l}</button>)}
       </div>
       <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Търси…" autoFocus />
+      {error && (
+        <div role="alert" style={{ marginTop: 8, fontSize: 13, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "8px 12px", display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+          <span style={{ flex: 1 }}>{error}</span>
+          <Button variant="ghost" onClick={onRetry} style={{ padding: "6px 12px" }}>Опитай пак</Button>
+        </div>
+      )}
+      {ready && !error && (mode === "food" ? foundF : foundR).length === 0 && (
+        <div style={{ marginTop: 10, fontSize: 13, color: t.muted }}>
+          {q.trim() ? `Няма ${mode === "food" ? "продукт" : "рецепта"} с „${q.trim()}".` : mode === "food" ? "Базата с храни е празна." : "Още нямаш рецепти."}
+          {mode === "food" && " Можеш да добавиш продукт в „База и рецепти“."}
+        </div>
+      )}
+      {!ready && <div style={{ marginTop: 10, fontSize: 13, color: t.muted }}>Зареждане…</div>}
       <div style={{ maxHeight: "50vh", overflowY: "auto", marginTop: 8 }}>
         {mode === "food" ? foundF.map((f) => (
           <button key={f.id} onClick={() => onAdd({ food_id: f.id, qty: f.unit === "piece" ? 1 : 100, unit: f.unit, snapshot: { kcal: f.kcal, protein_g: f.protein_g, carbs_g: f.carbs_g, fat_g: f.fat_g, fiber_g: f.fiber_g, name: f.name_bg } })}
@@ -669,7 +697,7 @@ function MicroAnalysis({ tree, client, onClose }) {
   );
 }
 
-function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
+function AIGenerate({ foods, client, target, dayIdx, onApply, onClose, onCatalogChanged, catalogErr }) {
   const [scope, setScope] = useState("week");
   const [extra, setExtra] = useState("");
   const [replace, setReplace] = useState(true);
@@ -764,10 +792,11 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
             </span>
           </label>
           {!client && <div style={{ fontSize: 12.5, color: t.warn }}>Няма зареден клиент — черновата ще е без цели/ограничения.</div>}
+          {catalogErr && <div role="alert" style={{ fontSize: 12.5, color: t.warn }}>{catalogErr}</div>}
           {err && <div style={{ color: t.warn, fontSize: 13 }}>{err}</div>}
           <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
             <Button variant="ghost" onClick={onClose} disabled={busy}>Отказ</Button>
-            <Button onClick={generate} disabled={busy} style={{ opacity: busy ? 0.6 : 1 }}>{busy ? "Генерирам…" : "Генерирай"}</Button>
+            <Button onClick={generate} disabled={busy || (catalogErr && foods.length === 0)} style={{ opacity: busy || (catalogErr && foods.length === 0) ? 0.6 : 1 }}>{busy ? "Генерирам…" : "Генерирай"}</Button>
           </div>
           {busy && <div style={{ fontSize: 12.5, color: t.muted }}>AI съставя режима и го добавя към плана… това може да отнеме 10-30 сек.</div>}
         </div>
@@ -776,7 +805,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
           <div style={{ fontSize: 14, color: t.ink, background: t.tealPale, borderRadius: 10, padding: "10px 12px" }}>
             {result.added > 0 ? <>✅ Добавени <b>{result.added}</b> продукта в {result.days} {result.days === 1 ? "ден" : "дни"}. Това е чернова — стойностите се смятат от базата{result.aiAdded > 0 ? " (освен тези с „AI стойности\")" : ""}, но провери подбора и количествата.</> : <>AI не предложи нито един продукт от базата. Нищо не е добавено.</>}
           </div>
-          {result.aiAdded > 0 && <AIFoodsNote result={result} />}
+          {result.aiAdded > 0 && <AIFoodsNote result={result} onAdded={onCatalogChanged} />}
           {result.rejected?.length > 0 && (
             <div style={{ fontSize: 12.5, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "9px 12px" }}>
               ⚠️ {result.rejected.length} храни извън базата са отхвърлени заради невъзможни стойности и не са добавени: {result.rejected.slice(0, 10).join("; ")}
@@ -797,7 +826,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
 }
 
 // Храни извън базата, добавени от AI: списък със стойностите и възможност да влязат в собствената база.
-function AIFoodsNote({ result }) {
+function AIFoodsNote({ result, onAdded }) {
   const { session } = useAuth();
   const [state, setState] = useState("");
   const addToDb = async () => {
@@ -805,6 +834,7 @@ function AIFoodsNote({ result }) {
     const rows = result.aiFoods.map((f) => ({ owner_id: session.user.id, name_bg: f.name, unit: "100g", ...f.per100g, source: "AI (непроверено)" }));
     const { error } = await supabase.from("foods").insert(rows);
     setState(error ? "Грешка: " + error.message : "done");
+    if (!error) onAdded?.();
   };
   return (
     <div style={{ fontSize: 12.5, color: t.ink, background: "#fff", border: `1px solid ${t.coralLight}`, borderRadius: 10, padding: "9px 12px", display: "grid", gap: 6 }}>

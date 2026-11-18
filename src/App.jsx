@@ -92,35 +92,28 @@ function Shell() {
     </main>
   );
 
-  // DESKTOP: фиксиран sidebar | 1fr
-  if (isDesktop) {
-    return (
-      <div style={{ fontFamily: FONT, background: t.bg, minHeight: "100vh", display: "grid", gridTemplateColumns: "230px 1fr" }}>
+  // Една и съща структура за десктоп и мобилен изглед: <main> е винаги на едно и също място в дървото,
+  // така че смяна на изгледа (завъртане на таблет/телефон) не пресъздава екраните и не затваря прозорци.
+  return (
+    <div style={{ fontFamily: FONT, background: t.bg, minHeight: "100vh", ...(isDesktop ? { display: "grid", gridTemplateColumns: "230px 1fr" } : null) }}>
+      {isDesktop ? (
         <aside style={{ background: t.tealDark, color: "#fff", padding: "18px 14px", display: "flex", flexDirection: "column", position: "sticky", top: 0, height: "100vh" }}>
           {SidebarInner}
         </aside>
-        {content}
-      </div>
-    );
-  }
-
-  // MOBILE / TABLET: горна лента + чекмедже
-  return (
-    <div style={{ fontFamily: FONT, background: t.bg, minHeight: "100vh" }}>
-      <header style={{ background: t.tealDark, color: "#fff", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", position: "sticky", top: 0, zIndex: 40 }}>
-        <button onClick={() => setMenuOpen(true)} aria-label="Меню" style={{ background: "rgba(255,255,255,0.14)", border: "none", color: "#fff", width: 38, height: 38, borderRadius: 9, cursor: "pointer", fontSize: 18 }}>☰</button>
-        <div style={{ fontSize: 17, fontWeight: 800 }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
-        <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600 }}>{nav.find((x) => x.id === view)?.label}</div>
-      </header>
-
-      {menuOpen && (
+      ) : (
+        <header style={{ background: t.tealDark, color: "#fff", display: "flex", alignItems: "center", gap: 12, padding: "12px 16px", position: "sticky", top: 0, zIndex: 40 }}>
+          <button onClick={() => setMenuOpen(true)} aria-label="Меню" style={{ background: "rgba(255,255,255,0.14)", border: "none", color: "#fff", width: 38, height: 38, borderRadius: 9, cursor: "pointer", fontSize: 18 }}>☰</button>
+          <div style={{ fontSize: 17, fontWeight: 800 }}><span style={{ color: t.coral }}>Pro</span>Nutrition</div>
+          <div style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600 }}>{nav.find((x) => x.id === view)?.label}</div>
+        </header>
+      )}
+      {!isDesktop && menuOpen ? (
         <div onClick={() => setMenuOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(14,48,47,0.5)", zIndex: 50 }}>
           <aside onClick={(e) => e.stopPropagation()} style={{ background: t.tealDark, color: "#fff", width: 250, maxWidth: "80vw", height: "100%", padding: "18px 14px", display: "flex", flexDirection: "column" }}>
             {SidebarInner}
           </aside>
         </div>
-      )}
-
+      ) : null}
       {content}
     </div>
   );
