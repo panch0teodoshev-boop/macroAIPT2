@@ -78,7 +78,7 @@ export default function Measurements({ client, onClose, onProfileUpdated }) {
 
         {/* въвеждане */}
         <div style={{ background: t.tealPale, borderRadius: 12, padding: 12, marginBottom: 14 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(130px,1fr))", gap: 10, alignItems: "end" }}>
             <Field label="Дата"><Input type="date" value={form.measured_on} max={todayIso()} onChange={(e) => set("measured_on", e.target.value)} /></Field>
             {METRICS.map((m) => (
               <Field key={m.key} label={`${m.label} (${m.unit})`}><Input inputMode="decimal" value={form[m.key]} onChange={(e) => set(m.key, e.target.value)} /></Field>
