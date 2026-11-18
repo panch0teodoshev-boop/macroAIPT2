@@ -461,6 +461,71 @@ test("мащабиране към цел: преглед, нова чернов�
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("шаблони: запазване на ден и седмица, прилагане (добавяне/замяна/нова чернова), изтрит продукт, изтриване", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  const modal = () => page.locator("h3", { hasText: /^Шаблони$/ }).locator("xpath=..");
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByText("Още нямаш шаблони").waitFor();
+  assert.equal(await modal().getByRole("button", { name: "Запази Понеделник като шаблон" }).isDisabled(), true, "празен ден не се запазва");
+  await page.keyboard.press("Escape").catch(() => {}); await modal().locator("xpath=..").click({ position: { x: 5, y: 5 } });
+  await addFood(page, 0, "Пилешко филе"); await addFood(page, 1, "Ориз");            // пн: 165 + 130 = 295
+  await page.getByText(/Общо за деня: 295 kcal/).waitFor();
+  // запазване на деня
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByRole("button", { name: "Запази Понеделник като шаблон" }).click();
+  const box = page.getByRole("dialog", { name: "Шаблон от Понеделник" }).getByRole("textbox");
+  assert.equal(await box.inputValue(), "Ден ~300 kcal");
+  await answer(page, { text: "Лек ден" });
+  await modal().getByText("295 kcal · 2 продукта").waitFor();
+  const tplDay = be.db.plan_templates.find((x) => x.name === "Лек ден");
+  assert.equal(tplDay.kind, "day"); assert.equal(tplDay.owner_id, be.db.profiles.find((p) => p.email === "nut@test.local").id);
+  assert.equal(JSON.stringify(tplDay.content).includes("Мария"), false, "шаблонът не съдържа данни за клиента");
+  await modal().locator("xpath=..").click({ position: { x: 5, y: 5 } });
+  // прилагане към вторник: добавяне, после замяна (пита)
+  await page.getByRole("button", { name: /^Вторник/ }).click();
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByRole("button", { name: "Приложи Лек ден" }).click();
+  await page.getByText(/Шаблонът „Лек ден" е добавен към Вторник/).waitFor();
+  await page.getByText(/Общо за деня: 295 kcal/).waitFor();
+  const tue = () => { const v = be.db.plan_versions[0]; const d = be.db.plan_days.find((x) => x.version_id === v.id && x.weekday === 1); return be.db.plan_meals.filter((m) => m.day_id === d.id); };
+  assert.equal(tue().length, 8, "4 празни стандартни + 4 от шаблона");
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByLabel("Как се прилага шаблон на ден").selectOption("replace");
+  await modal().getByRole("button", { name: "Приложи Лек ден" }).click();
+  await answer(page);
+  assert.match(page._dialogs.at(-1), /Вторник съдържа 2 продукта/);
+  await page.getByText(/Шаблонът „Лек ден" е приложен към Вторник/).waitFor();
+  await page.getByText(/Общо за деня: 295 kcal/).waitFor();
+  assert.equal(tue().length, 4, "замяна, не добавяне");
+  // седмица → нова чернова; междувременно оризът е изтрит от базата
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByRole("button", { name: "Запази седмицата като шаблон" }).click();
+  await answer(page, { text: "Седмица А" });
+  await modal().getByText(/295 kcal\/ден средно · 4 продукта/).waitFor();
+  be.db.foods.splice(be.db.foods.findIndex((f) => f.name_bg.startsWith("Ориз")), 1);
+  await modal().getByRole("button", { name: "Приложи Седмица А" }).click();
+  await page.getByText(/Създадена е чернова v2 от шаблона „Седмица А"\. Предишните версии са непроменени\. 2 продукта вече не са в базата/).waitFor();
+  await page.getByText(/Общо за деня: 295 kcal/).waitFor();
+  const v2 = be.db.plan_versions.find((v) => v.version === 2);
+  assert.equal(v2.status, "draft");
+  const v2items = be.db.plan_meal_items.filter((i) => be.db.plan_meals.some((m) => m.id === i.meal_id && be.db.plan_days.some((d) => d.id === m.day_id && d.version_id === v2.id)));
+  assert.equal(v2items.length, 4); assert.equal(v2items.filter((i) => i.food_id === null).length, 2, "изтритият продукт е без връзка, но със снапшот");
+  // изтриване на шаблон
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  await modal().getByRole("button", { name: "Изтрий шаблона Лек ден" }).click();
+  await answer(page);
+  await modal().getByRole("button", { name: "Приложи Лек ден" }).waitFor({ state: "detached" });
+  assert.equal(be.db.plan_templates.length, 1);
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/templates-desktop.png" });
+  await page.setViewportSize({ width: 375, height: 740 });
+  await page.getByRole("button", { name: "Шаблони", exact: true }).click();
+  const bb = await modal().boundingBox();
+  assert.ok(bb.x >= 0 && bb.x + bb.width <= 375, "шаблоните се побират на телефон");
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/templates-mobile.png" });
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("сравнение на версии: суми, разлика и списък с промени по дни", async () => {
   const { page, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);

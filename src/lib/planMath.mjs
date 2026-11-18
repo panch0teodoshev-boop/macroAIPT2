@@ -249,3 +249,24 @@ export function scalePlan(tree, targetKcal, mode = "perDay") {
   const fs = filled.map((d) => factors[d.weekday]);
   return { mode, target, days: out, tree: newTree, filledDays: filled.length, avgBefore: avgOf("before"), avgAfter: avgOf("after"), minFactor: Math.min(...fs), maxFactor: Math.max(...fs) };
 }
+
+// ---------- шаблони на ден / седмица ----------
+/** Съдържание за шаблон от дни на режима (без идентификатори на редове; снапшотите се пазят). */
+export function templateContent(days) {
+  return (days || []).map((d) => ({
+    weekday: d.weekday,
+    meals: [...(d.plan_meals || [])].sort((a, b) => (a.position ?? 0) - (b.position ?? 0)).map((m, i) => ({
+      name: m.name, position: i,
+      items: (m.plan_meal_items || []).map((it) => ({ food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: Number(it.qty), unit: it.unit, snapshot: it.snapshot || {} })),
+    })),
+  }));
+}
+/** Обратно в дървовидна форма (за суми и преглед). */
+export function templateAsTree(content) {
+  return (content || []).map((d) => ({ weekday: d.weekday, plan_meals: (d.meals || []).map((m) => ({ name: m.name, position: m.position, plan_meal_items: m.items || [] })) }));
+}
+/** Обобщение за списъка: брой продукти и средно kcal за попълнените дни. */
+export function templateStats(content) {
+  const w = weekSummary(templateAsTree(content));
+  return { item_count: w.items, kcal_avg: w.filledDays ? Math.round(w.avgFilled.kcal * 10) / 10 : 0, filledDays: w.filledDays };
+}

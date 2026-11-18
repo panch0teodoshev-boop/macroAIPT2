@@ -250,3 +250,23 @@ test("scalePlan: брой и порция се закръглят към пра�
   assert.equal(scalePlan([dayOf(0, [item(chicken, 100)])], 0), null);
   assert.equal(scalePlan([dayOf(0, [item(chicken, 100)])], "abc"), null);
 });
+
+// ---------- шаблони ----------
+import { templateContent, templateAsTree, templateStats } from "./planMath.mjs";
+test("шаблон: съдържание без id-та, подредено по позиция; обратно дава същите суми", () => {
+  const days = [{ id: "d1", weekday: 2, plan_meals: [
+    { id: "m2", name: "Обяд", position: 5, plan_meal_items: [{ id: "i2", food_id: "f-rice", qty: "100", unit: "100g", snapshot: rice }] },
+    { id: "m1", name: "Закуска", position: 1, plan_meal_items: [{ id: "i1", food_id: "f-ch", recipe_id: null, qty: 200, unit: "100g", snapshot: chicken, foods: { name_bg: "x" } }] },
+  ] }];
+  const c = templateContent(days);
+  assert.deepEqual(c[0].meals.map((m) => [m.name, m.position]), [["Закуска", 0], ["Обяд", 1]]);
+  assert.deepEqual(c[0].meals[0].items[0], { food_id: "f-ch", recipe_id: null, qty: 200, unit: "100g", snapshot: chicken });
+  assert.equal(JSON.stringify(c).includes('"id"'), false, "без идентификатори на редове");
+  near(dayTotals(templateAsTree(c)[0]).kcal, 330 + 130);
+  assert.deepEqual(templateStats(c), { item_count: 2, kcal_avg: 460, filledDays: 1 });
+});
+test("шаблон на седмица: средното е по попълнените дни; празен шаблон → 0", () => {
+  const c = templateContent([dayOf(0, [item(chicken, 100)]), dayOf(1, [item(chicken, 200)]), dayOf(2, [])]);
+  assert.deepEqual(templateStats(c), { item_count: 2, kcal_avg: 247.5, filledDays: 2 });
+  assert.deepEqual(templateStats(templateContent([dayOf(0, [])])), { item_count: 0, kcal_avg: 0, filledDays: 0 });
+});

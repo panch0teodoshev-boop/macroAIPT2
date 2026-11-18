@@ -17,7 +17,7 @@ const CASCADE = { clients: [["plans", "client_id"], ["client_measurements", "cli
 export function createBackend() {
   const db = {
     profiles: [], clients: [], client_measurements: [], foods: [], recipes: [], recipe_ingredients: [], plans: [], plan_versions: [],
-    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [],
+    plan_days: [], plan_meals: [], plan_meal_items: [], ai_conversations: [], admin_audit: [], plan_templates: [],
   };
   const users = {}; // email → {id, password}
   const state = { failNext: null, aiCalls: [], aiReply: "Примерен отговор.", aiStatus: 200, requests: [] };

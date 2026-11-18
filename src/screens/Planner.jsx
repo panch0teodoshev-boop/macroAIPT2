@@ -5,7 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { round } from "../lib/nutrition.mjs";
-import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty, scalePlan, roundQty } from "../lib/planMath.mjs";
+import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty, scalePlan, roundQty, templateContent, templateStats } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
 import { alertDialog, confirmDialog, promptDialog } from "../ui/dialogApi.js";
@@ -33,6 +33,7 @@ export default function Planner() {
   const [showMicro, setShowMicro] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
   const [showScale, setShowScale] = useState(false);
+  const [showTemplates, setShowTemplates] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
@@ -103,30 +104,53 @@ export default function Planner() {
     const srcDays = await run(supabase.from("plan_days")
       .select("weekday, plan_meals(name, position, plan_meal_items(food_id, recipe_id, qty, unit, snapshot))")
       .eq("version_id", srcVersionId), "Четенето на версията");
-    // Групово копиране с идентификатори, генерирани в клиента → 3 заявки вместо десетки.
+    const content = templateContent(srcDays || []);
+    if (factors) for (const d of content) {
+      const f = factors[d.weekday] ?? 1;
+      if (f !== 1) for (const m of d.meals) for (const it of m.items) it.qty = roundQty(it.unit, Number(it.qty) * f);
+    }
+    await insertContent(dstVersionId, content);
+  }
+  // Записва съдържание (формат на шаблон) като дни на версия. Групово, с id-та от клиента → 3 заявки.
+  async function insertContent(dstVersionId, content) {
     const seen = new Set(); const days = [], meals = [], items = [];
-    for (const d of srcDays || []) {
+    for (const d of content || []) {
       if (seen.has(d.weekday)) continue; seen.add(d.weekday); // защита от дублирани дни
       const dayId = crypto.randomUUID(); days.push({ id: dayId, version_id: dstVersionId, weekday: d.weekday });
-      for (const m of d.plan_meals || []) {
+      for (const m of d.meals || []) {
         const mealId = crypto.randomUUID(); meals.push({ id: mealId, day_id: dayId, name: m.name, position: m.position });
-        for (const it of m.plan_meal_items || []) items.push({ meal_id: mealId, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: factors && (factors[d.weekday] ?? 1) !== 1 ? roundQty(it.unit, Number(it.qty) * factors[d.weekday]) : it.qty, unit: it.unit, snapshot: it.snapshot });
+        for (const it of m.items || []) items.push({ meal_id: mealId, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot });
       }
     }
     if (days.length) await run(supabase.from("plan_days").insert(days), "Копирането на дните");
     if (meals.length) await run(supabase.from("plan_meals").insert(meals), "Копирането на храненията");
     if (items.length) await run(supabase.from("plan_meal_items").insert(items), "Копирането на продуктите");
   }
+  // Шаблонът може да сочи продукт/рецепта, изтрити след запазването му → махаме връзката, снапшотът остава.
+  async function dropMissingRefs(content) {
+    const all = content.flatMap((d) => d.meals.flatMap((m) => m.items));
+    const ids = (k) => [...new Set(all.map((it) => it[k]).filter(Boolean))];
+    const have = async (table, list) => (list.length ? new Set((await run(supabase.from(table).select("id").in("id", list), "Проверката на продуктите")).map((r) => r.id)) : new Set());
+    const [foods, recipes] = await Promise.all([have("foods", ids("food_id")), have("recipes", ids("recipe_id"))]);
+    let dropped = 0;
+    const clean = content.map((d) => ({ ...d, meals: d.meals.map((m) => ({ ...m, items: m.items.map((it) => {
+      const f = it.food_id && !foods.has(it.food_id), r = it.recipe_id && !recipes.has(it.recipe_id);
+      if (f || r) dropped++;
+      return { ...it, food_id: f ? null : it.food_id || null, recipe_id: r ? null : it.recipe_id || null };
+    }) })) }));
+    return { content: clean, dropped };
+  }
 
   // mode: "duplicate" | "blank" | "scaled" (копие с мащабирани количества; factors = множител по ден от scalePlan)
-  const newVersion = guard(async (mode, factors = null) => {
+  const newVersion = guard(async (mode, factors = null, content = null) => {
     if (!plan) return;
-    const copy = mode === "duplicate" || mode === "scaled";
+    const copy = mode === "duplicate" || mode === "scaled" || mode === "template";
     setLoading(true);
     const nextNum = Math.max(0, ...versions.map((v) => v.version || 0)) + 1;
     const nv = await run(supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: copy ? (version?.targets || {}) : {} }).select("id, version, status, created_at, targets").single(), "Създаването на версия");
     try {
-      if (copy && version) await copyVersionContent(version.id, nv.id, mode === "scaled" ? factors : null);
+      if (mode === "template") await insertContent(nv.id, content);
+      else if (copy && version) await copyVersionContent(version.id, nv.id, mode === "scaled" ? factors : null);
       await ensureDays(nv.id); // допълва липсващи дни и при дублиране
     } catch (e) {
       // непълно копие не бива да остава като „версия": премахваме я и оставаме на текущата
@@ -219,25 +243,69 @@ export default function Planner() {
     setTree((tr) => tr.map((d) => ({ ...d, plan_meals: d.plan_meals.map((m) => ({ ...m, plan_meal_items: (m.plan_meal_items || []).map((it) => (it.id === id ? { ...it, qty } : it)) })) })));
     await run(supabase.from("plan_meal_items").update({ qty }).eq("id", id), "Записът на количеството");
   });
+  // Записва хранения в ден от текущата версия. replace: старото съдържание се маха СЛЕД успешен запис
+  // (при прекъсване няма загуба); иначе храненията се добавят след съществуващите.
+  async function writeDayMeals(weekday, srcMeals, replace) {
+    const td = await run(supabase.from("plan_days").select("id").eq("version_id", version.id).eq("weekday", weekday).limit(1).single(), "Намирането на целевия ден");
+    const oldMeals = await run(supabase.from("plan_meals").select("id, position").eq("day_id", td.id), "Четенето на целевия ден");
+    const offset = replace ? 0 : (oldMeals || []).reduce((a, m) => Math.max(a, (m.position ?? 0) + 1), 0);
+    const meals = srcMeals.map((m, i) => ({ id: crypto.randomUUID(), day_id: td.id, name: m.name, position: offset + i }));
+    const items = srcMeals.flatMap((m, i) => (m.items || []).map((it) => ({ meal_id: meals[i].id, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot })));
+    try {
+      if (meals.length) await run(supabase.from("plan_meals").insert(meals), "Копирането на храненията");
+      if (items.length) await run(supabase.from("plan_meal_items").insert(items), "Копирането на продуктите");
+    } catch (e) {
+      if (meals.length) await supabase.from("plan_meals").delete().in("id", meals.map((m) => m.id)); // връщаме деня в изходно състояние
+      throw e;
+    }
+    if (replace && oldMeals?.length) await run(supabase.from("plan_meals").delete().in("id", oldMeals.map((x) => x.id)), "Почистването на стария ден");
+  }
+
+  // ---------- шаблони ----------
+  const saveTemplate = guard(async (kind) => {
+    const days = kind === "day" ? (day ? [day] : []) : tree;
+    const content = templateContent(days);
+    const st = templateStats(content);
+    if (!st.item_count) return;
+    const name = await promptDialog({
+      title: kind === "day" ? `Шаблон от ${DAYS[dayIdx]}` : "Шаблон от цялата седмица",
+      label: "Име на шаблона",
+      message: `${st.item_count} продукта, ${round(st.kcal_avg)} kcal${kind === "week" ? `/ден средно (${st.filledDays} попълнени дни)` : ""}. Не включвай името на клиента — шаблоните са общи за всичките ти клиенти.`,
+      defaultValue: kind === "day" ? `Ден ~${Math.round(st.kcal_avg / 50) * 50} kcal` : `Седмица ~${Math.round(st.kcal_avg / 50) * 50} kcal`,
+      maxLength: 80, confirmLabel: "Запази шаблона",
+    });
+    if (!name) return;
+    await run(supabase.from("plan_templates").insert({ owner_id: session.user.id, name, kind, content, kcal_avg: st.kcal_avg, item_count: st.item_count }), "Запазването на шаблона");
+    setNotice(`Шаблонът „${name}" е запазен.`);
+    return true;
+  });
+  // Прилага шаблон: ден → към избрания ден (замяна или добавяне); седмица → нова чернова.
+  const applyTemplate = guard(async (tpl, how) => {
+    const full = await run(supabase.from("plan_templates").select("content").eq("id", tpl.id).single(), "Зареждането на шаблона");
+    const { content, dropped } = await dropMissingRefs(full.content || []);
+    const note = dropped ? ` ${dropped} продукта вече не са в базата — запазени са със стойностите от шаблона.` : "";
+    if (tpl.kind === "week") {
+      const nv = await newVersion("template", null, content);
+      if (nv) setNotice(`Създадена е чернова v${nv.version} от шаблона „${tpl.name}". Предишните версии са непроменени.${note}`);
+      return true;
+    }
+    if (locked) return;
+    const replace = how === "replace";
+    const existing = (day?.plan_meals || []).reduce((a, m) => a + (m.plan_meal_items?.length || 0), 0);
+    if (replace && existing > 0 && !(await confirmDialog({ title: `Замяна на ${DAYS[dayIdx]}`, message: `${DAYS[dayIdx]} съдържа ${existing} продукта. Шаблонът „${tpl.name}" ще ги замени.`, confirmLabel: "Замени", danger: true }))) return;
+    await writeDayMeals(dayIdx, content[0]?.meals || [], replace);
+    await reload();
+    setNotice(`Шаблонът „${tpl.name}" е ${replace ? "приложен към" : "добавен към"} ${DAYS[dayIdx]}.${note}`);
+    return true;
+  });
+
   const copyDayTo = guard(async (targetWeekday) => {
     if (locked) return;
     const src = day; if (!src) return;
     const target = tree.find((d) => d.weekday === targetWeekday);
     const existing = (target?.plan_meals || []).reduce((a, m) => a + (m.plan_meal_items?.length || 0), 0);
     if (existing > 0 && !(await confirmDialog({ title: `Копиране в ${DAYS[targetWeekday]}`, message: `${DAYS[targetWeekday]} вече съдържа ${existing} продукта. Копирането ще ги замени.`, confirmLabel: "Замени", danger: true }))) return;
-    const td = await run(supabase.from("plan_days").select("id").eq("version_id", version.id).eq("weekday", targetWeekday).limit(1).single(), "Намирането на целевия ден");
-    // Първо записваме копието, после махаме старото съдържание → при прекъсване няма загуба на данни.
-    const oldMeals = await run(supabase.from("plan_meals").select("id").eq("day_id", td.id), "Четенето на целевия ден");
-    const meals = src.plan_meals.map((m) => ({ id: crypto.randomUUID(), day_id: td.id, name: m.name, position: m.position }));
-    const items = src.plan_meals.flatMap((m, i) => (m.plan_meal_items || []).map((it) => ({ meal_id: meals[i].id, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot })));
-    try {
-      if (meals.length) await run(supabase.from("plan_meals").insert(meals), "Копирането на храненията");
-      if (items.length) await run(supabase.from("plan_meal_items").insert(items), "Копирането на продуктите");
-    } catch (e) {
-      if (meals.length) await supabase.from("plan_meals").delete().in("id", meals.map((m) => m.id)); // връщаме целевия ден в изходно състояние
-      throw e;
-    }
-    if (oldMeals?.length) await run(supabase.from("plan_meals").delete().in("id", oldMeals.map((x) => x.id)), "Почистването на стария ден");
+    await writeDayMeals(targetWeekday, templateContent([src])[0].meals, true);
     await reload();
     setNotice(`Денят е копиран в ${DAYS[targetWeekday]}.`);
   });
@@ -325,6 +393,7 @@ export default function Planner() {
           )}
           <Select value="" onChange={(m) => m && newVersion(m)} style={{ width: "auto" }}
             options={[{ value: "", label: "+ Нова версия…" }, { value: "duplicate", label: "Дублирай текущата" }, { value: "blank", label: "Празна (7 дни)" }]} />
+          <Button variant="ghost" onClick={() => setShowTemplates(true)}>Шаблони</Button>
           {week.items > 0 && <Button variant="ghost" onClick={() => setShowScale(true)} title="Нова чернова с пропорционално преизчислени количества">Мащабирай към цел</Button>}
           {versions.length > 1 && <Button variant="ghost" onClick={() => setShowCompare(true)}>Сравни версии</Button>}
           {versions.length > 1 && <Button variant="danger" onClick={deleteVersion} style={{ padding: "8px 12px" }}>Изтрий версия</Button>}
@@ -442,6 +511,9 @@ export default function Planner() {
         await reload();
       })} />}
       {showShop && <ShoppingList tree={tree} onClose={() => setShowShop(false)} />}
+      {showTemplates && <Templates dayName={DAYS[dayIdx]} dayItems={(day?.plan_meals || []).reduce((a, m) => a + (m.plan_meal_items?.length || 0), 0)} weekItems={week.items} locked={locked}
+        nextVersion={Math.max(0, ...versions.map((v) => v.version || 0)) + 1}
+        onSave={saveTemplate} onApply={async (tpl, how) => { if (await applyTemplate(tpl, how)) setShowTemplates(false); }} onClose={() => setShowTemplates(false)} />}
       {showScale && <ScalePlan tree={tree} target={target} version={version} nextVersion={Math.max(0, ...versions.map((v) => v.version || 0)) + 1}
         onClose={() => setShowScale(false)}
         onApply={async (r) => {
@@ -800,6 +872,69 @@ function CompareVersions({ versions, current, client, onClose }) {
   );
 }
 
+function Templates({ dayName, dayItems, weekItems, locked, nextVersion, onSave, onApply, onClose }) {
+  const [list, setList] = useState(null);
+  const [err, setErr] = useState("");
+  const [how, setHow] = useState("append");
+  const [busy, setBusy] = useState(false);
+  const load = () => supabase.from("plan_templates").select("id, name, kind, kcal_avg, item_count, created_at").order("created_at", { ascending: false })
+    .then(({ data, error }) => { if (error) setErr("Шаблоните не можаха да се заредят: " + error.message); else setList(data || []); });
+  useEffect(() => { load(); }, []);
+  const save = async (kind) => { setBusy(true); try { if (await onSave(kind)) await load(); } finally { setBusy(false); } };
+  const apply = async (tpl) => { setBusy(true); try { await onApply(tpl, how); } finally { setBusy(false); } };
+  const remove = async (tpl) => {
+    if (!(await confirmDialog({ title: `Изтриване на „${tpl.name}"`, message: "Режимите, в които вече е приложен, не се променят.", confirmLabel: "Изтрий шаблона", danger: true }))) return;
+    const { error } = await supabase.from("plan_templates").delete().eq("id", tpl.id);
+    if (error) setErr("Изтриването не успя: " + error.message); else load();
+  };
+  const fmt = (d) => (d ? new Date(d).toLocaleDateString("bg-BG") : "");
+  const chip = (txt, bg, fg) => <span style={{ fontSize: 11.5, fontWeight: 700, padding: "2px 8px", borderRadius: 999, background: bg, color: fg }}>{txt}</span>;
+  return (
+    <Modal title="Шаблони" onClose={onClose} wide>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 6 }}>
+        <Button variant="ghost" disabled={busy || !dayItems} onClick={() => save("day")} style={!dayItems ? { opacity: 0.5 } : undefined}>Запази {dayName} като шаблон</Button>
+        <Button variant="ghost" disabled={busy || !weekItems} onClick={() => save("week")} style={!weekItems ? { opacity: 0.5 } : undefined}>Запази седмицата като шаблон</Button>
+      </div>
+      <div style={{ fontSize: 12, color: t.muted, marginBottom: 14 }}>Шаблоните са твои и важат за всички клиенти. Пазят храненията, продуктите, количествата и хранителните стойности.</div>
+      {err && <div role="alert" style={{ color: t.warn, fontSize: 13, marginBottom: 10 }}>{err}</div>}
+      {!list && !err && <div style={{ color: t.muted }}>Зареждане…</div>}
+      {list && list.length === 0 && <div style={{ color: t.muted, fontSize: 13.5 }}>Още нямаш шаблони. Попълни ден или седмица и ги запази с бутоните отгоре.</div>}
+      {list && list.length > 0 && (
+        <>
+          {list.some((x) => x.kind === "day") && (
+            <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", marginBottom: 10, fontSize: 13, color: t.ink }}>
+              <span>Шаблон на ден се прилага към <b>{dayName}</b>:</span>
+              <Select value={how} onChange={setHow} style={{ width: "auto" }} aria-label="Как се прилага шаблон на ден" options={[
+                { value: "append", label: "добави към съществуващото" }, { value: "replace", label: "замени съдържанието" }]} />
+            </div>
+          )}
+          <div style={{ display: "grid", gap: 8 }}>
+            {list.map((tpl) => {
+              const dayBlocked = tpl.kind === "day" && locked;
+              return (
+                <div key={tpl.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", border: `1px solid ${t.line}`, borderRadius: 12, padding: "10px 12px" }}>
+                  <div style={{ flex: "1 1 220px", minWidth: 0 }}>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                      <b style={{ color: t.ink, overflowWrap: "anywhere" }}>{tpl.name}</b>
+                      {tpl.kind === "day" ? chip("Ден", t.tealPale, t.tealDark) : chip("Седмица", t.coralLight, t.coralDark)}
+                    </div>
+                    <div style={{ fontSize: 12.5, color: t.muted, marginTop: 2 }}>{round(tpl.kcal_avg || 0)} kcal{tpl.kind === "week" ? "/ден средно" : ""} · {tpl.item_count} продукта · {fmt(tpl.created_at)}</div>
+                  </div>
+                  <Button variant="teal" disabled={busy || dayBlocked} title={dayBlocked ? "Версията е финална — върни я в чернова или създай нова" : undefined}
+                    onClick={() => apply(tpl)} style={{ padding: "8px 12px", ...(dayBlocked ? { opacity: 0.5 } : null) }}
+                    aria-label={`Приложи ${tpl.name}`}>{tpl.kind === "day" ? `Приложи към ${dayName}` : `Нова чернова v${nextVersion}`}</Button>
+                  <button onClick={() => remove(tpl)} aria-label={`Изтрий шаблона ${tpl.name}`} style={{ border: "none", background: "none", color: t.muted, cursor: "pointer", fontSize: 15 }}>✕</button>
+                </div>
+              );
+            })}
+          </div>
+          {locked && list.some((x) => x.kind === "day") && <div style={{ fontSize: 12.5, color: t.muted, marginTop: 8 }}>Текущата версия е финална — шаблон на ден не може да се приложи към нея.</div>}
+        </>
+      )}
+    </Modal>
+  );
+}
+
 function ScalePlan({ tree, target, version, nextVersion, onClose, onApply }) {
   const [kcal, setKcal] = useState(target ? String(Math.round(target.kcal)) : "");
   const [mode, setMode] = useState("perDay");
@@ -876,8 +1011,9 @@ function ScalePlan({ tree, target, version, nextVersion, onClose, onApply }) {
 function Modal({ title, children, onClose, wide }) {
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(14,48,47,0.45)", display: "grid", placeItems: "center", padding: 16, zIndex: 50 }} onClick={onClose}>
-      <Card style={{ width: "100%", maxWidth: wide ? 860 : 480, maxHeight: "92vh", overflow: "auto" }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ margin: "0 0 12px", color: t.ink }}>{title}</h3>{children}
+      <Card style={{ width: "100%", maxWidth: wide ? 860 : 480, maxHeight: "92vh", overflow: "auto", position: "relative" }} onClick={(e) => e.stopPropagation()}>
+        <button onClick={onClose} aria-label="Затвори" title="Затвори" style={{ position: "absolute", top: 12, right: 12, border: "none", background: "none", color: t.muted, cursor: "pointer", fontSize: 18, lineHeight: 1, padding: 6 }}>✕</button>
+        <h3 style={{ margin: "0 0 12px", paddingRight: 32, color: t.ink }}>{title}</h3>{children}
       </Card>
     </div>
   );
