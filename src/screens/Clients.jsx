@@ -4,6 +4,7 @@ import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { ageFromBirthDate } from "../lib/planMath.mjs";
+import Measurements from "./Measurements.jsx";
 
 const GOALS = [
   { value: "reduction", label: "Редукция" },
@@ -26,6 +27,7 @@ export default function Clients({ onCalc, onPlan }) {
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
   const [showArchived, setShowArchived] = useState(false);
+  const [measFor, setMeasFor] = useState(null);
 
   async function load() {
     setLoading(true);
@@ -92,6 +94,7 @@ export default function Clients({ onCalc, onPlan }) {
                       <td style={{ ...td, whiteSpace: "nowrap" }}>
                         <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
                           <Button variant="ghost" style={btn} onClick={() => setForm(c)}>Редактирай</Button>
+                          {!c.archived && <Button variant="ghost" style={btn} onClick={() => setMeasFor(c)}>Мерки</Button>}
                           {!c.archived && <Button variant="ghost" style={btn} onClick={() => onPlan?.(c)}>Режим</Button>}
                           {!c.archived && <Button variant="ghost" style={btn} onClick={() => onCalc?.(c)}>Калкулатор</Button>}
                           <Button variant="ghost" style={{ ...btn, color: t.muted }} onClick={() => setArchived(c, !c.archived)}>{c.archived ? "Върни" : "Архивирай"}</Button>
@@ -106,6 +109,7 @@ export default function Clients({ onCalc, onPlan }) {
         </Card>
       )}
 
+      {measFor && <Measurements client={measFor} onClose={() => setMeasFor(null)} onProfileUpdated={load} />}
       {form && <ClientForm nutritionistId={session.user.id} client={form.id ? form : null} onClose={() => setForm(null)} onSaved={() => { setForm(null); load(); }} />}
     </div>
   );

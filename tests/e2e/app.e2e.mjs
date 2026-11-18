@@ -409,6 +409,60 @@ test("сравнение на версии: суми, разлика и спис
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("мерки: въвеждане, валидиране, профилът се обновява само от най-новото, тенденция и графика", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await nav(page, "Моите клиенти");
+  await page.getByRole("main").getByRole("button", { name: "Мерки", exact: true }).click();
+  await page.getByText("Още няма измервания").waitFor();
+  const dlg = page.locator("h3", { hasText: "Мерки — Мария Иванова" }).locator("xpath=../..");
+  const add = async (date, kg, waist = "") => {
+    await dlg.getByLabel("Дата", { exact: true }).fill(date); await dlg.getByLabel("Тегло (кг)", { exact: true }).fill(kg); await dlg.getByLabel("Талия (см)", { exact: true }).fill(waist);
+    await dlg.getByRole("button", { name: "Добави измерване" }).click();
+  };
+  await add("2026-10-01", "820");
+  await dlg.getByText("Тегло: между 25 и 350 кг.").waitFor();
+  assert.equal(be.db.client_measurements.length, 0);
+  await add("2026-10-01", "68", "80");
+  await dlg.getByText(/Теглото в профила е обновено на 68 кг/).waitFor();
+  await add("2026-11-15", "65,5");
+  await dlg.getByText(/Теглото в профила е обновено на 65.5 кг/).waitFor();
+  await add("2026-09-01", "70");                                   // по-старо → профилът остава 65.5
+  await dlg.getByText(/има по-ново измерване/).waitFor();
+  assert.equal(be.db.clients.find((c) => c.first_name === "Мария").weight_kg, 65.5);
+  assert.equal(be.db.client_measurements.find((m) => m.measured_on === "2026-11-15").waist_cm, null, "празно поле = null, не 0");
+  // 70 → 65.5 за 75 дни: −4.5 кг; −4.5/75·7 = −0.42 кг/седмица
+  await dlg.getByText(/70 → 65.5 кг/).waitFor();
+  await dlg.getByText(/−4.5 кг за 75 дни, средно −0.42 кг\/седмица/).waitFor();
+  await dlg.getByRole("img", { name: "Тегло (кг): 3 измервания" }).waitFor();
+  const box = await dlg.locator("svg").boundingBox();
+  await page.mouse.move(box.x + box.width - 20, box.y + 100);
+  await dlg.getByText("15.11.2026").first().waitFor();
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/meas-desktop.png" });
+  // талията има само едно измерване
+  await dlg.getByRole("tab", { name: "Талия · 1" }).click();
+  await dlg.getByText(/Едно измерване \(80 см на 01.10.2026\)/).waitFor();
+  // изтриване
+  await dlg.getByRole("button", { name: "Изтрий измерването от 01.09.2026" }).click();
+  await dlg.getByRole("tab", { name: "Тегло · 2" }).waitFor();
+  assert.equal(be.db.client_measurements.length, 2);
+  await dlg.getByRole("button", { name: "Затвори" }).click();
+  await page.getByRole("cell", { name: "65.5 кг" }).waitFor();
+  // телефон (375 px): прозорецът с мерките се събира без хоризонтално преливане
+  await page.setViewportSize({ width: 375, height: 800 });
+  await page.getByRole("main").getByRole("button", { name: "Мерки", exact: true }).click();
+  await page.getByRole("img", { name: "Тегло (кг): 2 измервания" }).waitFor();
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/meas-mobile.png" });
+  assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= 376), "без хоризонтално преливане на 375 px");
+  // графиката и текстът над нея се побират в картата (таблицата може да се превърта сама)
+  const fits = await page.evaluate(() => {
+    const card = document.querySelector("h3").closest("div[style*='max-width']") || document.querySelector("h3").parentElement.parentElement;
+    const cr = card.getBoundingClientRect(); const svg = document.querySelector("svg[role=img]").getBoundingClientRect();
+    return svg.right <= cr.right + 0.5 && svg.width > 200;
+  });
+  assert.ok(fits, "графиката е в рамките на картата на 375 px");
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("цел: без записана цел планерът казва, че е по формула", async () => {
   const { page, context } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);
