@@ -5,7 +5,7 @@ import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
 import { useViewport } from "../ui/useViewport.js";
 import { round } from "../lib/nutrition.mjs";
-import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty } from "../lib/planMath.mjs";
+import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty, scalePlan, roundQty } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
 import { alertDialog, confirmDialog, promptDialog } from "../ui/dialogApi.js";
@@ -32,10 +32,11 @@ export default function Planner() {
   const [showShop, setShowShop] = useState(false);
   const [showMicro, setShowMicro] = useState(false);
   const [showCompare, setShowCompare] = useState(false);
+  const [showScale, setShowScale] = useState(false);
   const [showAI, setShowAI] = useState(false);
   const [err, setErr] = useState("");
   const [notice, setNotice] = useState("");
-  useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(""), 3500); return () => clearTimeout(id); }, [notice]);
+  useEffect(() => { if (!notice) return; const id = setTimeout(() => setNotice(""), Math.max(3500, notice.length * 70)); return () => clearTimeout(id); }, [notice]);
   // Изпълнява заявка към базата и ПОКАЗВА грешката (досега грешките се губеха тихо).
   const run = async (q, what = "Записът") => {
     const { data, error } = await q;
@@ -98,7 +99,7 @@ export default function Planner() {
   }
 
   // Дълбоко копира съдържанието (дни→хранения→айтеми) от source версия в target.
-  async function copyVersionContent(srcVersionId, dstVersionId) {
+  async function copyVersionContent(srcVersionId, dstVersionId, factors = null) {
     const srcDays = await run(supabase.from("plan_days")
       .select("weekday, plan_meals(name, position, plan_meal_items(food_id, recipe_id, qty, unit, snapshot))")
       .eq("version_id", srcVersionId), "Четенето на версията");
@@ -109,7 +110,7 @@ export default function Planner() {
       const dayId = crypto.randomUUID(); days.push({ id: dayId, version_id: dstVersionId, weekday: d.weekday });
       for (const m of d.plan_meals || []) {
         const mealId = crypto.randomUUID(); meals.push({ id: mealId, day_id: dayId, name: m.name, position: m.position });
-        for (const it of m.plan_meal_items || []) items.push({ meal_id: mealId, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: it.qty, unit: it.unit, snapshot: it.snapshot });
+        for (const it of m.plan_meal_items || []) items.push({ meal_id: mealId, food_id: it.food_id || null, recipe_id: it.recipe_id || null, qty: factors && (factors[d.weekday] ?? 1) !== 1 ? roundQty(it.unit, Number(it.qty) * factors[d.weekday]) : it.qty, unit: it.unit, snapshot: it.snapshot });
       }
     }
     if (days.length) await run(supabase.from("plan_days").insert(days), "Копирането на дните");
@@ -117,13 +118,15 @@ export default function Planner() {
     if (items.length) await run(supabase.from("plan_meal_items").insert(items), "Копирането на продуктите");
   }
 
-  const newVersion = guard(async (mode) => {
+  // mode: "duplicate" | "blank" | "scaled" (копие с мащабирани количества; factors = множител по ден от scalePlan)
+  const newVersion = guard(async (mode, factors = null) => {
     if (!plan) return;
+    const copy = mode === "duplicate" || mode === "scaled";
     setLoading(true);
     const nextNum = Math.max(0, ...versions.map((v) => v.version || 0)) + 1;
-    const nv = await run(supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: mode === "duplicate" ? (version?.targets || {}) : {} }).select("id, version, status, created_at, targets").single(), "Създаването на версия");
+    const nv = await run(supabase.from("plan_versions").insert({ plan_id: plan.id, version: nextNum, status: "draft", targets: copy ? (version?.targets || {}) : {} }).select("id, version, status, created_at, targets").single(), "Създаването на версия");
     try {
-      if (mode === "duplicate" && version) await copyVersionContent(version.id, nv.id);
+      if (copy && version) await copyVersionContent(version.id, nv.id, mode === "scaled" ? factors : null);
       await ensureDays(nv.id); // допълва липсващи дни и при дублиране
     } catch (e) {
       // непълно копие не бива да остава като „версия": премахваме я и оставаме на текущата
@@ -134,6 +137,7 @@ export default function Planner() {
     setDayIdx(0);
     await reload(nv.id);
     setLoading(false);
+    return nv;
   });
 
   const setVersionStatus = guard(async (status) => {
@@ -321,6 +325,7 @@ export default function Planner() {
           )}
           <Select value="" onChange={(m) => m && newVersion(m)} style={{ width: "auto" }}
             options={[{ value: "", label: "+ Нова версия…" }, { value: "duplicate", label: "Дублирай текущата" }, { value: "blank", label: "Празна (7 дни)" }]} />
+          {week.items > 0 && <Button variant="ghost" onClick={() => setShowScale(true)} title="Нова чернова с пропорционално преизчислени количества">Мащабирай към цел</Button>}
           {versions.length > 1 && <Button variant="ghost" onClick={() => setShowCompare(true)}>Сравни версии</Button>}
           {versions.length > 1 && <Button variant="danger" onClick={deleteVersion} style={{ padding: "8px 12px" }}>Изтрий версия</Button>}
         </Card>
@@ -437,6 +442,14 @@ export default function Planner() {
         await reload();
       })} />}
       {showShop && <ShoppingList tree={tree} onClose={() => setShowShop(false)} />}
+      {showScale && <ScalePlan tree={tree} target={target} version={version} nextVersion={Math.max(0, ...versions.map((v) => v.version || 0)) + 1}
+        onClose={() => setShowScale(false)}
+        onApply={async (r) => {
+          const from = version.version;
+          setShowScale(false);
+          const nv = await newVersion("scaled", Object.fromEntries(r.days.map((d) => [d.weekday, d.factor])));
+          if (nv) setNotice(`Създадена е чернова v${nv.version}, мащабирана към ${round(r.target)} kcal/ден. Версия v${from} е непроменена — виж разликите със „Сравни версии".`);
+        }} />}
       {showCompare && <CompareVersions versions={versions} current={version} client={client} onClose={() => setShowCompare(false)} />}
       {showMicro && <MicroAnalysis tree={tree} client={client} onClose={() => setShowMicro(false)} />}
       {showAI && <AIGenerate foods={foods} client={client} target={target} dayIdx={dayIdx} onApply={applyAIPlan} onClose={() => setShowAI(false)} />}
@@ -781,6 +794,79 @@ function CompareVersions({ versions, current, client, onClose }) {
               <div style={{ fontSize: 11.5, color: t.muted }}>Сравнява се количеството на всеки продукт за деня; преместване между хранения в същия ден не се отчита като промяна.</div>
             </div>
           )}
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+function ScalePlan({ tree, target, version, nextVersion, onClose, onApply }) {
+  const [kcal, setKcal] = useState(target ? String(Math.round(target.kcal)) : "");
+  const [mode, setMode] = useState("perDay");
+  const [busy, setBusy] = useState(false);
+  const n = parseQty(kcal, 10000);
+  const valid = n != null && n >= 800;
+  const r = useMemo(() => (valid ? scalePlan(tree, n, mode) : null), [tree, n, mode, valid]);
+  const K = [["kcal", "kcal"], ["protein_g", "Протеин (г)"], ["carbs_g", "Въглехидр. (г)"], ["fat_g", "Мазнини (г)"]];
+  const big = r && (r.minFactor < 0.6 || r.maxFactor > 1.6);
+  // макросите на текущата цел важат само ако новата цел е (почти) същата — иначе не ги сравняваме
+  const sameKcal = target && n != null && Math.abs(n - target.kcal) <= Math.max(20, 0.02 * target.kcal);
+  const macroGaps = r && sameKcal ? K.slice(1).filter(([k]) => target[k] > 0 && Math.abs(r.avgAfter[k] - target[k]) > Math.max(10, 0.1 * target[k])) : [];
+  const pct = (f) => `${f >= 1 ? "+" : "−"}${Math.abs(Math.round((f - 1) * 100))}%`;
+  return (
+    <Modal title="Мащабиране към калорийна цел" onClose={onClose} wide>
+      <div style={{ fontSize: 13, color: t.muted, marginBottom: 12, lineHeight: 1.5 }}>
+        Количествата се преизчисляват пропорционално и се закръглят (грамове до 5 г, бройки до ½). Резултатът е <b>нова чернова v{nextVersion}</b> — версия v{version?.version} остава непроменена.
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(200px,1fr))", gap: 10, alignItems: "start" }}>
+        <Field label="Цел (kcal/ден)" hint={target ? `Текуща цел: ${round(target.kcal)} kcal${target.source === "saved" ? " (от калкулатора)" : " (по формула)"}` : "Няма цел — въведи стойност."}>
+          <Input inputMode="numeric" value={kcal} onChange={(e) => setKcal(e.target.value)} aria-label="Цел (kcal/ден)" />
+        </Field>
+        <Field label="Как">
+          <Select value={mode} onChange={setMode} aria-label="Начин на мащабиране" options={[
+            { value: "perDay", label: "Всеки ден точно към целта" },
+            { value: "uniform", label: "Общ множител (запазва разликите между дните)" },
+          ]} />
+        </Field>
+      </div>
+      {kcal !== "" && !valid && <div role="alert" style={{ color: t.warn, fontSize: 13, marginBottom: 10 }}>Въведи цел между 800 и 10000 kcal.</div>}
+      {r && (
+        <div style={{ display: "grid", gap: 12 }}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 460, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: t.coral, color: "#fff" }}><th style={{ ...th, textAlign: "left" }}>Средно/ден ({r.filledDays} попълнени дни)</th>{K.map(([, l]) => <th key={l} style={th}>{l}</th>)}</tr></thead>
+              <tbody>
+                <tr><td style={{ ...td, textAlign: "left", fontWeight: 700 }}>Сега</td>{K.map(([k]) => <td key={k} style={td}>{round(r.avgBefore[k])}</td>)}</tr>
+                <tr style={{ background: t.tealPale }}><td style={{ ...td, textAlign: "left", fontWeight: 700 }}>След мащабиране</td>{K.map(([k]) => <td key={k} style={{ ...td, fontWeight: 700 }}>{round(r.avgAfter[k])}</td>)}</tr>
+                <tr><td style={{ ...td, textAlign: "left", color: t.muted }}>Цел</td>{K.map(([k]) => <td key={k} style={{ ...td, color: t.muted }}>{k === "kcal" ? round(n) : sameKcal ? round(target[k]) : "—"}</td>)}</tr>
+              </tbody>
+            </table>
+          </div>
+          <div style={{ overflowX: "auto" }}>
+            <table style={{ width: "100%", minWidth: 380, borderCollapse: "collapse", fontSize: 13 }}>
+              <thead><tr style={{ background: t.tealDark, color: "#fff" }}><th style={{ ...th, textAlign: "left" }}>Ден</th><th style={th}>Сега kcal</th><th style={th}>След kcal</th><th style={th}>Промяна</th></tr></thead>
+              <tbody>{r.days.map((d) => (
+                <tr key={d.weekday}>
+                  <td style={{ ...td, textAlign: "left", fontWeight: 600 }}>{DAYS[d.weekday]}</td>
+                  {d.before.kcal > 0
+                    ? <><td style={td}>{round(d.before.kcal)}</td><td style={{ ...td, fontWeight: 700 }}>{round(d.after.kcal)}</td><td style={{ ...td, color: d.factor < 0.6 || d.factor > 1.6 ? t.warn : t.ink }}>{pct(d.factor)}</td></>
+                    : <td colSpan={3} style={{ ...td, color: t.muted }}>празен — не се променя</td>}
+                </tr>
+              ))}</tbody>
+            </table>
+          </div>
+          <div style={{ fontSize: 12.5, color: t.muted, lineHeight: 1.5 }}>
+            Мащабирането запазва съотношението между продуктите, затова протеин, въглехидрати и мазнини се променят със същия процент. „След" е пресметнато върху вече закръглените количества.
+            {target && !sameKcal && <> Макросите на текущата цел са за {round(target.kcal)} kcal и не се сравняват; за нова цел с макроси — Калкулатор → „Запази като цел на режима" върху новата чернова.</>}
+          </div>
+          {macroGaps.length > 0 && <div role="note" style={{ fontSize: 13, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "8px 12px" }}>
+            След мащабирането {macroGaps.map(([k, l]) => `${l.split(" ")[0].toLowerCase()} ${round(r.avgAfter[k])} г (цел ${round(target[k])} г)`).join(", ")} — разминаването идва от състава на режима, не от мащабирането. Коригирай продуктите ръчно в новата чернова.
+          </div>}
+          {big && <div role="note" style={{ fontSize: 13, color: t.coralDark }}>Някои дни се променят с над 40%. Порциите може да станат непрактични — прегледай ги в новата чернова.</div>}
+          <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", flexWrap: "wrap" }}>
+            <Button variant="ghost" onClick={onClose}>Отказ</Button>
+            <Button variant="teal" disabled={busy} onClick={async () => { setBusy(true); await onApply(r); }}>Създай чернова v{nextVersion}</Button>
+          </div>
         </div>
       )}
     </Modal>

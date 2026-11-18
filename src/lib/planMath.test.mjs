@@ -215,3 +215,38 @@ test("сравнение: празни версии → без промени и
   const r = compareTrees([], null);
   assert.equal(r.changedDays, 0); assert.equal(r.days.length, 7); assert.equal(r.days[0].a.kcal, 0);
 });
+
+// ---------- мащабиране към калорийна цел ----------
+import { roundQty, scalePlan } from "./planMath.mjs";
+test("roundQty: грамове до 5 g, малки до 1 g, брой до 0.5, порция до 0.25", () => {
+  assert.equal(roundQty("100g", 123.4), 125); assert.equal(roundQty("100g", 122.4), 120);
+  assert.equal(roundQty("100g", 12.6), 13); assert.equal(roundQty("100g", 0.2), 1);
+  assert.equal(roundQty("piece", 2.6), 2.5); assert.equal(roundQty("piece", 0.1), 0.5);
+  assert.equal(roundQty("serving", 1.13), 1.25); assert.equal(roundQty("100g", 0), 0);
+});
+const dayOf = (weekday, items) => ({ weekday, plan_meals: [{ name: "Обяд", position: 0, plan_meal_items: items }] });
+test("scalePlan perDay: всеки ден към целта; празен ден не се пипа", () => {
+  // пн: 200 g пилешко = 330 kcal; вт: 100 g пилешко + 100 g ориз = 295 kcal; ср: празен
+  const tree = [dayOf(0, [item(chicken, 200)]), dayOf(1, [item(chicken, 100), item(rice, 100)]), dayOf(2, [])];
+  const r = scalePlan(tree, 660, "perDay");
+  near(r.days[0].factor, 2); assert.equal(r.tree[0].plan_meals[0].plan_meal_items[0].qty, 400);
+  near(r.days[1].factor, 660 / 295);                       // 2.237… → 223.7 g → 225 g
+  assert.deepEqual(r.tree[1].plan_meals[0].plan_meal_items.map((i) => i.qty), [225, 225]);
+  near(r.days[1].after.kcal, 2.25 * 295);                  // 663.75 — реалното след закръгляне
+  assert.equal(r.days[2].factor, 1); assert.equal(r.filledDays, 2);
+  near(r.avgAfter.kcal, (660 + 663.75) / 2);
+  assert.equal(tree[0].plan_meals[0].plan_meal_items[0].qty, 200, "оригиналът не се променя");
+});
+test("scalePlan uniform: общ множител, запазва разликите между дните", () => {
+  const tree = [dayOf(0, [item(chicken, 200)]), dayOf(1, [item(chicken, 100)])]; // 330 и 165 → средно 247.5
+  const r = scalePlan(tree, 495, "uniform");                 // ×2
+  near(r.days[0].factor, 2); near(r.days[1].factor, 2);
+  assert.deepEqual(r.tree.map((d) => d.plan_meals[0].plan_meal_items[0].qty), [400, 200]);
+});
+test("scalePlan: брой и порция се закръглят към практични стойности; невалидна цел/празен режим → null", () => {
+  const r = scalePlan([dayOf(0, [item(egg, 2, "piece")])], 78 * 3.2); // 2 бр × 1.6 = 3.2 → 3 бр
+  assert.equal(r.tree[0].plan_meals[0].plan_meal_items[0].qty, 3);
+  assert.equal(scalePlan([dayOf(0, [])], 2000), null);
+  assert.equal(scalePlan([dayOf(0, [item(chicken, 100)])], 0), null);
+  assert.equal(scalePlan([dayOf(0, [item(chicken, 100)])], "abc"), null);
+});

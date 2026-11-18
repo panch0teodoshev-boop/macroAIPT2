@@ -207,3 +207,45 @@ export function parseQty(input, max = 99999) {
   if (!isFinite(n) || n < 0 || n > max) return null;
   return Math.round(n * 100) / 100;
 }
+
+/**
+ * Закръгляне на мащабирано количество до практично за кухнята:
+ * грамове → до 5 g (под 20 g → до 1 g, минимум 1 g); брой → до 0.5 (мин. 0.5); порция → до 0.25 (мин. 0.25).
+ */
+export function roundQty(unit, q) {
+  const n = val(q);
+  if (!isFinite(n) || n <= 0) return 0;
+  if (unit === "piece") return Math.max(0.5, Math.round(n * 2) / 2);
+  if (unit === "serving") return Math.max(0.25, Math.round(n * 4) / 4);
+  return n < 20 ? Math.max(1, Math.round(n)) : Math.round(n / 5) * 5;
+}
+
+/**
+ * Мащабиране на режим към калорийна цел (kcal/ден).
+ * mode "perDay": всеки попълнен ден се мащабира поотделно до целта (дните се изравняват);
+ * mode "uniform": един общ множител = цел / средно за попълнените дни (запазва разликите между дните).
+ * Празните дни (0 kcal) не се пипат. Връща множителите по ден, новото дърво (закръглени количества)
+ * и средното преди/след — „след" е пресметнато върху закръглените количества, т.е. реалният резултат.
+ */
+export function scalePlan(tree, targetKcal, mode = "perDay") {
+  const target = val(targetKcal);
+  if (!(isFinite(target) && target > 0)) return null;
+  const days = (tree || []).map((d) => ({ weekday: d.weekday, before: dayTotals(d) }));
+  const filled = days.filter((d) => d.before.kcal > 0);
+  if (!filled.length) return null;
+  const avgBefore = filled.reduce((a, d) => a + d.before.kcal, 0) / filled.length;
+  const factorOf = (d) => (d.before.kcal > 0 ? (mode === "uniform" ? target / avgBefore : target / d.before.kcal) : 1);
+  const factors = Object.fromEntries(days.map((d) => [d.weekday, factorOf(d)]));
+  const newTree = (tree || []).map((d) => ({
+    ...d,
+    plan_meals: (d.plan_meals || []).map((m) => ({
+      ...m,
+      plan_meal_items: (m.plan_meal_items || []).map((it) => (factors[d.weekday] === 1 ? it : { ...it, qty: roundQty(it.unit, val(it.qty) * factors[d.weekday]) })),
+    })),
+  }));
+  const after = newTree.map((d) => ({ weekday: d.weekday, totals: dayTotals(d) }));
+  const out = days.map((d, i) => ({ weekday: d.weekday, before: d.before, after: after[i].totals, factor: factors[d.weekday] }));
+  const avgOf = (key) => { const a = zero(); out.filter((d) => d.before.kcal > 0).forEach((d) => addInto(a, d[key])); for (const k of MACRO_KEYS) a[k] /= filled.length; return a; };
+  const fs = filled.map((d) => factors[d.weekday]);
+  return { mode, target, days: out, tree: newTree, filledDays: filled.length, avgBefore: avgOf("before"), avgAfter: avgOf("after"), minFactor: Math.min(...fs), maxFactor: Math.max(...fs) };
+}

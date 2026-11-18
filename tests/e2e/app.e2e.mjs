@@ -423,6 +423,44 @@ test("цел от калкулатора: запис към режима, пла
   assert.deepEqual(errors, []); await context.close();
 });
 
+test("мащабиране към цел: преглед, нова чернова с закръглени количества, оригиналът непроменен", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  assert.equal(await page.getByRole("button", { name: "Мащабирай към цел" }).count(), 0, "празен режим → няма бутон");
+  await addFood(page, 0, "Пилешко филе");                                     // пн: 165 kcal
+  await page.getByRole("button", { name: /^Вторник/ }).click();
+  await addFood(page, 0, "Пилешко филе"); await addFood(page, 1, "Ориз");     // вт: 165 + 130 = 295
+  await page.getByText(/Общо за деня: 295 kcal/).waitFor();
+  await page.getByRole("button", { name: "Мащабирай към цел" }).click();
+  const dlg = page.locator("h3", { hasText: "Мащабиране към калорийна цел" }).locator("xpath=..");
+  await dlg.getByLabel("Цел (kcal/ден)").fill("990");
+  const row = async (txt) => (await dlg.locator("tr", { hasText: txt }).first().innerText()).replace(/\s+/g, " ");
+  // пн ×6 → 600 г = 990; вт ×3.356 → 335.6 → 335 г всяко = 552.75 + 435.5 = 988.25
+  assert.match(await row("Понеделник"), /Понеделник 165 990 \+500%/);
+  assert.match(await row("Вторник"), /Вторник 295 988 \+236%/);
+  assert.match(await row("Сряда"), /празен — не се променя/);
+  assert.match(await row("След мащабиране"), /След мащабиране 989/);                // (990 + 988.25) / 2 = 989.1
+  await dlg.getByText(/над 40%/).waitFor();
+  // общ множител: 990 / 230 = 4.304 → 430 г; пн 430 × 1.65 = 709.5
+  await dlg.getByLabel("Начин на мащабиране").selectOption("uniform");
+  assert.match(await row("Понеделник"), /Понеделник 165 7(09|10) \+330%/);
+  await dlg.getByLabel("Начин на мащабиране").selectOption("perDay");
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/scale-desktop.png" });
+  await dlg.getByRole("button", { name: "Създай чернова v2" }).click();
+  await page.getByText(/Създадена е чернова v2, мащабирана към 990 kcal/).waitFor();
+  await page.getByText(/Общо за деня: 990 kcal/).waitFor();                     // пн на v2
+  assert.equal(await page.getByLabel("Количество за Пилешко филе").inputValue(), "600");
+  await page.getByRole("button", { name: /^Вторник/ }).click();
+  await page.getByText(/Общо за деня: 988(\.3)? kcal/).waitFor();
+  // v1 в базата е непроменена
+  const v1 = be.db.plan_versions.find((v) => v.version === 1), v2 = be.db.plan_versions.find((v) => v.version === 2);
+  const qtys = (v) => { const days = be.db.plan_days.filter((d) => d.version_id === v.id).map((d) => d.id); const meals = be.db.plan_meals.filter((m) => days.includes(m.day_id)).map((m) => m.id); return be.db.plan_meal_items.filter((i) => meals.includes(i.meal_id)).map((i) => Number(i.qty)).sort((a, b) => a - b); };
+  assert.deepEqual(qtys(v1), [100, 100, 100]);
+  assert.deepEqual(qtys(v2), [335, 335, 600]);
+  assert.equal(v2.status, "draft");
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("сравнение на версии: суми, разлика и списък с промени по дни", async () => {
   const { page, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);
