@@ -6,6 +6,7 @@ import { Button, Select } from "../ui/primitives.jsx";
 import { round } from "../lib/nutrition.mjs";
 import { dayTotals, weekSummary, effectiveTarget } from "../lib/planMath.mjs";
 import { aiRequest, trimHistory } from "../lib/ai.js";
+import Markdown from "../ui/Markdown.jsx";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
 
@@ -156,7 +157,7 @@ export default function AIAssistant() {
         )}
         {messages.map((m, i) => (
           <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start" }}>
-            <div style={{ maxWidth: "85%", whiteSpace: "pre-wrap", fontSize: 14, lineHeight: 1.5, padding: "10px 13px", borderRadius: 14, background: m.role === "user" ? t.teal : "#fff", color: m.role === "user" ? "#fff" : t.ink, border: m.role === "user" ? "none" : `1px solid ${t.line}` }}>{m.content}</div>
+            <div style={{ maxWidth: "85%", minWidth: 0, whiteSpace: m.role === "user" || m.error ? "pre-wrap" : "normal", overflowWrap: "break-word", fontSize: 14, lineHeight: 1.5, padding: "10px 13px", borderRadius: 14, background: m.role === "user" ? t.teal : "#fff", color: m.role === "user" ? "#fff" : t.ink, border: m.role === "user" ? "none" : `1px solid ${t.line}` }}>{m.role === "assistant" && !m.error ? <Markdown text={m.content} /> : m.content}</div>
           </div>
         ))}
         {busy && <div style={{ color: t.muted, fontSize: 13 }}>Мисля…</div>}

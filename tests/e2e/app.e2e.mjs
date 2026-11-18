@@ -447,6 +447,21 @@ test("AI асистент: минимизиран контекст с дневн
   await page.getByRole("button", { name: "Изпрати" }).click();
   await page.getByText(/⚠️ upstream error/).waitFor();
   assert.equal(be.db.ai_conversations[0].messages.some((m) => /upstream error/.test(m.content)), false);
+  // форматиране: заглавия, удебелен текст, линия, списък и таблица — без сурови „#“ и „**“; HTML остава текст
+  be.state.aiStatus = 200;
+  be.state.aiReply = "# 6 идеи за закуски\n\nЕто варианти.\n\n---\n\n## 1. Бъркани яйца\n**2 яйца + чушка**\n~300 ккал | ~18г протеин\n\n- първо\n- второ\n\n| Храна | kcal |\n|---|---|\n| Ориз | 130 |\n\n<b>не е удебелено</b>";
+  await page.getByPlaceholder(/Въпрос за режима/).fill("закуски");
+  await page.getByRole("button", { name: "Изпрати" }).click();
+  await page.getByRole("heading", { name: "6 идеи за закуски" }).waitFor();
+  await page.getByRole("heading", { name: "1. Бъркани яйца" }).waitFor();
+  await page.locator("strong", { hasText: "2 яйца + чушка" }).waitFor();
+  await page.getByRole("listitem").filter({ hasText: "второ" }).waitFor();
+  await page.getByRole("cell", { name: "130" }).waitFor();
+  await page.getByText("<b>не е удебелено</b>").waitFor();
+  const raw = await page.getByRole("main").innerText();
+  assert.equal(/\*\*|^#/m.test(raw.split("закуски").slice(1).join("")), false, "без сурови знаци за форматиране");
+  assert.equal(be.db.ai_conversations[0].messages.at(-1).content.startsWith("# 6 идеи"), true, "записва се оригиналният текст");
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/ai-markdown.png" });
   await context.close();
 });
 
