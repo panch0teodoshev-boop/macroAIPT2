@@ -3,6 +3,7 @@ import { useAuth } from "../context/Auth.jsx";
 import { supabase } from "../lib/supabase.js";
 import { t, FONT } from "../ui/theme.js";
 import { Button, Input, Field, Card } from "../ui/primitives.jsx";
+import { authErrorBg } from "../lib/authErrors.mjs";
 
 export default function ResetPassword() {
   const { clearRecovery, signOut, recovery } = useAuth();
@@ -21,7 +22,7 @@ export default function ResetPassword() {
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) { setErr(authErrorBg(error.message)); return; }
     setDone(true);
   };
 

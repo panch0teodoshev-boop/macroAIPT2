@@ -3,6 +3,7 @@ import { supabase } from "../lib/supabase.js";
 import { useAuth } from "../context/Auth.jsx";
 import { t } from "../ui/theme.js";
 import { Button, Card, Field, Input, Select } from "../ui/primitives.jsx";
+import { authErrorBg } from "../lib/authErrors.mjs";
 
 const SEX = { male: "Мъж", female: "Жена" };
 const WD = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
@@ -72,7 +73,7 @@ function PasswordChange() {
     setBusy(true);
     const { error } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
-    if (error) { setMsg({ ok: false, text: error.message }); return; }
+    if (error) { setMsg({ ok: false, text: authErrorBg(error.message) }); return; }
     setPw(""); setPw2("");
     setMsg({ ok: true, text: "Паролата е сменена успешно." });
   }

@@ -3,6 +3,7 @@ import { useAuth } from "../context/Auth.jsx";
 import { supabase } from "../lib/supabase.js";
 import { t, FONT } from "../ui/theme.js";
 import { Button, Input, Field, Card } from "../ui/primitives.jsx";
+import { authErrorBg } from "../lib/authErrors.mjs";
 
 export default function Login() {
   const { signIn } = useAuth();
@@ -17,7 +18,7 @@ export default function Login() {
     e.preventDefault();
     setBusy(true); setErr("");
     const { error } = await signIn(email.trim(), password);
-    if (error) setErr(error.message === "Invalid login credentials" ? "Грешен имейл или парола." : error.message);
+    if (error) setErr(authErrorBg(error.message));
     setBusy(false);
   };
 
@@ -27,7 +28,7 @@ export default function Login() {
     setBusy(true); setErr(""); setInfo("");
     const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
     setBusy(false);
-    if (error) { setErr(error.message); return; }
+    if (error) { setErr(authErrorBg(error.message)); return; }
     setInfo("Ако има акаунт с този имейл, изпратихме връзка за нулиране. Провери пощата си (и папка Спам).");
   };
 
