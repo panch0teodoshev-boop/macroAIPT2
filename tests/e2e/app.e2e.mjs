@@ -315,6 +315,45 @@ test("микронутриенти: покритие по нутриент, ли
   await context.close();
 });
 
+test("AI чернова с храни извън базата: валидирани стойности, маркировка, отхвърляне на невъзможни, добавяне в базата", async () => {
+  const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
+  await page.getByText("Здравей").waitFor(); await openPlanner(page);
+  be.state.aiReply = () => JSON.stringify({ days: [{ weekday: 0, meals: [
+    { name: "Обяд", items: [
+      { food: "Ориз", grams: 150, new: true, per100g: { kcal: 999, protein_g: 0, carbs_g: 0, fat_g: 0 } },  // има я в базата → стойности от базата
+      { food: "Киноа, сварена", grams: 150, new: true, per100g: { kcal: 120, protein_g: 4.4, carbs_g: 21.3, fat_g: 1.9, fiber_g: 2.8 } },
+      { food: "Вълшебна храна", grams: 100, new: true, per100g: { kcal: 20, protein_g: 30, carbs_g: 30, fat_g: 10 } }, // несъгласувани
+      { food: "Без стойности", grams: 100, new: true } ] },
+    { name: "Вечеря", items: [{ food: "киноа, сварена", grams: 100, new: true }] }] }] });
+  await page.getByRole("button", { name: "✨ AI чернова" }).click();
+  await page.locator("select", { hasText: "Цяла седмица" }).selectOption({ label: "Само Понеделник" });
+  await page.getByLabel(/Позволи храни извън базата/).check();
+  await page.getByRole("button", { name: "Генерирай" }).click();
+  await page.getByText(/Добавени 3 продукта в 1 ден/).waitFor();
+  await page.getByText(/2 от продуктите са с храни извън базата \(1 вида\)/).waitFor();
+  await page.getByText("Киноа, сварена — 120 kcal · П 4.4 · В 21.3 · М 1.9 на 100 г").waitFor();
+  await page.getByText(/1 храни извън базата са отхвърлени.*Вълшебна храна \(калориите \(20\) не съвпадат/).waitFor();
+  await page.getByText(/1 предложени храни не бяха намерени.*Без стойности/).waitFor();
+  const sent = JSON.stringify(be.state.aiCalls[0].body);
+  assert.match(sent, /Можеш да ползваш и храна, която я НЯМА в списъка/);
+  await page.getByRole("button", { name: "Добави ги в моята база" }).click();
+  await page.getByText(/Добавени са в „База и рецепти"/).waitFor();
+  const added = be.db.foods.find((f) => f.name_bg === "Киноа, сварена");
+  assert.equal(added.kcal, 120); assert.equal(added.source, "AI (непроверено)"); assert.ok(added.owner_id);
+  await page.getByRole("button", { name: "Готово" }).click();
+  // ориз 150 g = 195 (от базата, не 999); киноа 150 g = 180 + 100 g = 120 → 495
+  await page.getByText(/Общо за деня: 495 kcal/).waitFor();
+  assert.equal(await page.getByText("AI стойности").count(), 2);
+  // без отметката: старото поведение (само база) и промптът го казва
+  be.state.aiReply = () => JSON.stringify({ days: [{ weekday: 0, meals: [{ name: "Обяд", items: [{ food: "Киноа, сварена", grams: 150, new: true, per100g: { kcal: 120, protein_g: 4.4, carbs_g: 21.3, fat_g: 1.9 } }] }] }] });
+  await page.getByRole("button", { name: "✨ AI чернова" }).click();
+  await page.locator("select", { hasText: "Цяла седмица" }).selectOption({ label: "Само Понеделник" });
+  await page.getByRole("button", { name: "Генерирай" }).click();
+  await page.getByText(/1 предложени храни не бяха намерени.*Киноа/).waitFor();
+  assert.match(JSON.stringify(be.state.aiCalls[1].body), /Използвай САМО храни от предоставения списък/);
+  assert.deepEqual(errors, []); await context.close();
+});
+
 test("AI чернова: само храни от базата; измислените се отхвърлят; стойностите идват от базата", async () => {
   const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor(); await openPlanner(page);

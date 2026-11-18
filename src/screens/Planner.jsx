@@ -8,6 +8,7 @@ import { round } from "../lib/nutrition.mjs";
 import { itemTotals, itemMissing, mealTotals, dayTotals, weekSummary, recipePerServing as recipeCalc, microSummary, effectiveTarget, compareTrees, parseQty, scalePlan, roundQty, templateContent, templateStats } from "../lib/planMath.mjs";
 import { exportPlanPDF, exportPlanExcel } from "../lib/exporters.js";
 import { aiRequest } from "../lib/ai.js";
+import { validateAiFood } from "../lib/aiFoods.mjs";
 import { alertDialog, confirmDialog, promptDialog } from "../ui/dialogApi.js";
 
 const DAYS = ["Понеделник", "Вторник", "Сряда", "Четвъртък", "Петък", "Събота", "Неделя"];
@@ -315,12 +316,22 @@ export default function Planner() {
     try { return await applyAIPlanInner(genDays, opts); }
     catch (e) { await reload().catch(() => {}); throw e; } // показваме реалното (частично) състояние
   }
-  async function applyAIPlanInner(genDays, { replace, singleDayWeekday }) {
+  async function applyAIPlanInner(genDays, { replace, singleDayWeekday, allowNew }) {
     if (!version) return { added: 0, unmatched: [] };
     const norm = (s) => (s || "").toString().toLowerCase().trim();
     const byName = new Map();
     foods.forEach((f) => { if (f.unit === "100g") { byName.set(norm(f.name_bg), f); if (f.name_en) byName.set(norm(f.name_en), f); } });
-    let added = 0; const unmatched = new Set();
+    // Храни извън базата: стойностите се дават веднъж (при първата поява) → събираме ги от целия отговор.
+    // Храна, която я има в базата, винаги взима стойностите от базата, не от AI.
+    const aiDefs = new Map(), rejected = new Map();
+    if (allowNew) for (const gd of genDays || []) for (const meal of gd.meals || []) for (const it of meal.items || []) {
+      const key = norm(it.food);
+      if (!it.per100g || byName.has(key) || aiDefs.has(key)) continue;
+      const v = validateAiFood(it.food, it.per100g);
+      if (v.ok) { aiDefs.set(key, v); rejected.delete(key); } else rejected.set(key, `${String(it.food).slice(0, 60)} (${v.reason})`);
+    }
+    const aiUsed = new Map();
+    let added = 0, aiAdded = 0; const unmatched = new Set();
     const dayRows = await run(supabase.from("plan_days").select("id, weekday").eq("version_id", version.id), "Четенето на дните");
     const dayByWd = {}; (dayRows || []).forEach((d) => { if (dayByWd[d.weekday] == null) dayByWd[d.weekday] = d.id; });
     const doneDays = new Set();
@@ -339,18 +350,20 @@ export default function Planner() {
         const nm = await run(supabase.from("plan_meals").insert({ day_id: dayId, name: (meal.name || "Хранене").toString().slice(0, 60), position: pos++ }).select("id").single(), "Добавянето на хранене");
         const items = [];
         for (const it of meal.items || []) {
-          const f = byName.get(norm(it.food));
-          if (!f) { unmatched.add(it.food); continue; }
+          const key = norm(it.food);
+          const f = byName.get(key), ai = !f && aiDefs.get(key);
+          if (!f && !ai) { if (!rejected.has(key)) unmatched.add(it.food); continue; }
           const grams = Math.min(5000, Math.max(0, Math.round(+it.grams || 0)));
           if (!grams) continue;
-          items.push({ meal_id: nm.id, food_id: f.id, qty: grams, unit: "100g", snapshot: { kcal: f.kcal, protein_g: f.protein_g, carbs_g: f.carbs_g, fat_g: f.fat_g, fiber_g: f.fiber_g, name: f.name_bg } });
+          if (f) items.push({ meal_id: nm.id, food_id: f.id, qty: grams, unit: "100g", snapshot: { kcal: f.kcal, protein_g: f.protein_g, carbs_g: f.carbs_g, fat_g: f.fat_g, fiber_g: f.fiber_g, name: f.name_bg } });
+          else { items.push({ meal_id: nm.id, food_id: null, qty: grams, unit: "100g", snapshot: { ...ai.per100g, name: ai.name, source: "ai" } }); aiUsed.set(key, ai); aiAdded++; }
           added++;
         }
         if (items.length) await run(supabase.from("plan_meal_items").insert(items), "Добавянето на продукти");
       }
     }
     await reload();
-    return { added, unmatched: [...unmatched], days: doneDays.size };
+    return { added, aiAdded, aiFoods: [...aiUsed.values()], rejected: [...rejected.values()], unmatched: [...unmatched], days: doneDays.size };
   }
 
   if (!clientId) return (
@@ -483,7 +496,7 @@ export default function Planner() {
                   return (
                     <div key={it.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", borderBottom: `1px solid ${t.line}` }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13.5, color: t.ink, fontWeight: 600 }}>{name} {it.recipes && <span style={{ color: t.coral, fontSize: 11 }}>рецепта</span>}</div>
+                        <div style={{ fontSize: 13.5, color: t.ink, fontWeight: 600 }}>{name} {it.recipes && <span style={{ color: t.coral, fontSize: 11 }}>рецепта</span>}{it.snapshot?.source === "ai" && !it.food_id && <span title="Храната не е от базата — стойностите са предложени от AI. Провери ги." style={{ marginLeft: 4, fontSize: 10.5, fontWeight: 700, color: t.coralDark, background: t.coralLight, borderRadius: 999, padding: "1px 7px" }}>AI стойности</span>}</div>
                         <div style={{ fontSize: 11.5, color: t.muted }}>П {round(tot.protein_g)} · В {round(tot.carbs_g)} · М {round(tot.fat_g)}{itemMissing(it).length > 0 && <span style={{ color: t.warn, fontWeight: 700 }}> · непълни данни</span>}</div>
                       </div>
                       <QtyInput value={it.qty} disabled={locked} onCommit={(q) => setQty(it.id, q)} label={`Количество за ${name}`} />
@@ -660,6 +673,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
   const [scope, setScope] = useState("week");
   const [extra, setExtra] = useState("");
   const [replace, setReplace] = useState(true);
+  const [allowNew, setAllowNew] = useState(false);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [result, setResult] = useState(null);
@@ -681,12 +695,17 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
     const sys = [
       "Ти си професионален асистент за нутриционист. Съставяш ЧЕРНОВА на хранителен режим, която нутриционистът после коригира ръчно.",
       "ПРАВИЛА (стриктно):",
-      "- Използвай САМО храни от предоставения списък, изписани с ТОЧНОТО им име на български (копирай името дословно).",
+      ...(allowNew ? [
+        "- Предпочитай храни от предоставения списък, изписани с ТОЧНОТО им име (копирай дословно).",
+        "- Можеш да ползваш и храна, която я НЯМА в списъка, когато е нужна за разнообразие или по указание. Тогава добави \"new\": true и при ПЪРВАТА ѝ поява в отговора — \"per100g\": {\"kcal\",\"protein_g\",\"carbs_g\",\"fat_g\",\"fiber_g\"} за 100 g в състоянието, в което се яде (напр. сварена), по стандартни таблици за хранителен състав (USDA / българските таблици). При следващите появи на същата храна — само \"new\": true, без per100g. Име на български, без марки. Ползвай нови храни умерено.",
+      ] : ["- Използвай САМО храни от предоставения списък, изписани с ТОЧНОТО им име на български (копирай името дословно)."]),
       "- Всички количества са в ГРАМОВЕ (цели числа).",
       "- Съобрази дневните цели (калории и макроси) възможно най-близо за всеки ден.",
       "- Спазвай алергии, диета и изключени храни — НИКОГА не предлагай храна в конфликт с тях.",
       "- Връщай САМО валиден JSON по схемата по-долу. Без обяснения, без код-блокове, без текст преди/след.",
-      'Схема: {"days":[{"weekday":0,"meals":[{"name":"Закуска","items":[{"food":"<точно име от списъка>","grams":60}]}]}]}',
+      allowNew
+        ? 'Схема: {"days":[{"weekday":0,"meals":[{"name":"Закуска","items":[{"food":"<точно име от списъка>","grams":60},{"food":"Киноа, сварена","grams":150,"new":true,"per100g":{"kcal":120,"protein_g":4.4,"carbs_g":21.3,"fat_g":1.9,"fiber_g":2.8}}]}]}]}'
+        : 'Схема: {"days":[{"weekday":0,"meals":[{"name":"Закуска","items":[{"food":"<точно име от списъка>","grams":60}]}]}]}',
       "weekday: 0=Понеделник, 1=Вторник, 2=Сряда, 3=Четвъртък, 4=Петък, 5=Събота, 6=Неделя.",
     ].join("\n");
 
@@ -705,7 +724,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
 
     const userMsg = [
       task, "", cons.join("\n"), "",
-      "НАЛИЧНИ ХРАНИ (име: калории/протеин/въглехидрати/мазнини на 100 g) — използвай само тези имена:",
+      allowNew ? "НАЛИЧНИ ХРАНИ В БАЗАТА (име: калории/протеин/въглехидрати/мазнини на 100 g) — предпочитай тях:" : "НАЛИЧНИ ХРАНИ (име: калории/протеин/въглехидрати/мазнини на 100 g) — използвай само тези имена:",
       foodList,
     ].join("\n");
 
@@ -714,7 +733,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
       if (truncated) throw new Error("Отговорът на AI беше прекъснат (твърде дълъг). Генерирай ден по ден или намали броя хранения.");
       const parsed = extractJson(reply);
       if (!Array.isArray(parsed.days) || parsed.days.length === 0) throw new Error("AI не върна дни за режима. Опитай отново.");
-      const r = await onApply(parsed.days, { replace, singleDayWeekday: single ? dayIdx : null });
+      const r = await onApply(parsed.days, { replace, singleDayWeekday: single ? dayIdx : null, allowNew });
       setResult(r);
     } catch (e) {
       setErr("Грешка: " + (e.name === "SyntaxError" ? "AI върна невалиден формат. Опитай отново." : e.message));
@@ -726,7 +745,7 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
       {!result ? (
         <div style={{ display: "grid", gap: 12 }}>
           <div style={{ fontSize: 12.5, color: t.muted, background: t.tealPale, borderRadius: 10, padding: "9px 12px", lineHeight: 1.5 }}>
-            AI ще състави <b>чернова</b> само от храни в твоята база и ще съобрази целите и ограниченията на клиента. Ти проверяваш и коригираш след това — нищо не е финално.
+            AI ще състави <b>чернова</b> {allowNew ? "предимно от храни в базата" : "само от храни в твоята база"} и ще съобрази целите и ограниченията на клиента. Ти проверяваш и коригираш след това — нищо не е финално.
           </div>
           <Field label="Обхват">
             <Select value={scope} onChange={setScope} options={[{ value: "week", label: "Цяла седмица (7 дни)" }, { value: "day", label: `Само ${DAYS[dayIdx]}` }]} />
@@ -737,6 +756,12 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: t.ink, cursor: "pointer" }}>
             <input type="checkbox" checked={replace} onChange={(e) => setReplace(e.target.checked)} style={{ width: 17, height: 17, accentColor: t.coral }} />
             Замести съществуващото съдържание в избраните дни
+          </label>
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, fontSize: 13.5, color: t.ink, cursor: "pointer" }}>
+            <input type="checkbox" checked={allowNew} onChange={(e) => setAllowNew(e.target.checked)} style={{ width: 17, height: 17, accentColor: t.coral, marginTop: 1 }} />
+            <span>Позволи храни извън базата
+              <span style={{ display: "block", fontSize: 12, color: t.muted, marginTop: 2 }}>Стойностите им идват от AI, не от проверена база — проверяват се за съгласуваност и се маркират „AI стойности" в режима. Може да ги добавиш в базата си след това.</span>
+            </span>
           </label>
           {!client && <div style={{ fontSize: 12.5, color: t.warn }}>Няма зареден клиент — черновата ще е без цели/ограничения.</div>}
           {err && <div style={{ color: t.warn, fontSize: 13 }}>{err}</div>}
@@ -749,8 +774,14 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
       ) : (
         <div style={{ display: "grid", gap: 12 }}>
           <div style={{ fontSize: 14, color: t.ink, background: t.tealPale, borderRadius: 10, padding: "10px 12px" }}>
-            {result.added > 0 ? <>✅ Добавени <b>{result.added}</b> продукта в {result.days} {result.days === 1 ? "ден" : "дни"}. Това е чернова — стойностите се смятат от базата, но провери подбора и количествата.</> : <>AI не предложи нито един продукт от базата. Нищо не е добавено.</>}
+            {result.added > 0 ? <>✅ Добавени <b>{result.added}</b> продукта в {result.days} {result.days === 1 ? "ден" : "дни"}. Това е чернова — стойностите се смятат от базата{result.aiAdded > 0 ? " (освен тези с „AI стойности\")" : ""}, но провери подбора и количествата.</> : <>AI не предложи нито един продукт от базата. Нищо не е добавено.</>}
           </div>
+          {result.aiAdded > 0 && <AIFoodsNote result={result} />}
+          {result.rejected?.length > 0 && (
+            <div style={{ fontSize: 12.5, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "9px 12px" }}>
+              ⚠️ {result.rejected.length} храни извън базата са отхвърлени заради невъзможни стойности и не са добавени: {result.rejected.slice(0, 10).join("; ")}
+            </div>
+          )}
           {result.unmatched?.length > 0 && (
             <div style={{ fontSize: 12.5, color: t.coralDark, background: t.coralLight, borderRadius: 10, padding: "9px 12px" }}>
               ⚠️ {result.unmatched.length} предложени храни не бяха намерени в базата и са пропуснати: {result.unmatched.slice(0, 15).join(", ")}{result.unmatched.length > 15 ? "…" : ""}
@@ -762,6 +793,31 @@ function AIGenerate({ foods, client, target, dayIdx, onApply, onClose }) {
         </div>
       )}
     </Modal>
+  );
+}
+
+// Храни извън базата, добавени от AI: списък със стойностите и възможност да влязат в собствената база.
+function AIFoodsNote({ result }) {
+  const { session } = useAuth();
+  const [state, setState] = useState("");
+  const addToDb = async () => {
+    setState("busy");
+    const rows = result.aiFoods.map((f) => ({ owner_id: session.user.id, name_bg: f.name, unit: "100g", ...f.per100g, source: "AI (непроверено)" }));
+    const { error } = await supabase.from("foods").insert(rows);
+    setState(error ? "Грешка: " + error.message : "done");
+  };
+  return (
+    <div style={{ fontSize: 12.5, color: t.ink, background: "#fff", border: `1px solid ${t.coralLight}`, borderRadius: 10, padding: "9px 12px", display: "grid", gap: 6 }}>
+      <div>🔸 <b>{result.aiAdded}</b> от продуктите са с храни извън базата ({result.aiFoods.length} вида). Стойностите им са от AI и са маркирани „AI стойности" — провери ги:</div>
+      <ul style={{ margin: 0, paddingLeft: 18, lineHeight: 1.55 }}>
+        {result.aiFoods.slice(0, 12).map((f) => <li key={f.name}>{f.name} — {f.per100g.kcal} kcal · П {f.per100g.protein_g} · В {f.per100g.carbs_g} · М {f.per100g.fat_g} на 100 г</li>)}
+      </ul>
+      {state === "done" ? <div style={{ color: t.good, fontWeight: 700 }}>✓ Добавени са в „База и рецепти" като твои храни (източник „AI (непроверено)") — там можеш да ги коригираш.</div>
+        : <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+            <Button variant="ghost" disabled={state === "busy"} onClick={addToDb} style={{ padding: "7px 12px" }}>Добави ги в моята база</Button>
+            {state.startsWith("Грешка") && <span role="alert" style={{ color: t.warn }}>{state}</span>}
+          </div>}
+    </div>
   );
 }
 
