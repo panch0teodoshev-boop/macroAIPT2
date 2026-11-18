@@ -5,3 +5,10 @@ body { -webkit-text-size-adjust: 100%; }
 input, select, textarea, button { font-family: inherit; max-width: 100%; }
 /* дискретен scrollbar за таблиците */
 * { -webkit-tap-highlight-color: transparent; }
+/* iOS Safari: полето за дата има собствена минимална ширина и височина → прелива клетката и
+   разминава подравняването с другите полета. Изравняваме го с обикновените полета. */
+input[type="date"] { -webkit-appearance: none; appearance: none; min-width: 0; display: block; line-height: 1.2; height: 42px; }
+input:not([type="checkbox"]):not([type="radio"]), select { min-height: 42px; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; }
+/* телефон: 16px в полетата → iOS не увеличава (zoom) страницата при докосване на поле */
+@media (max-width: 767px) { input, select, textarea { font-size: 16px !important; } }

@@ -514,12 +514,27 @@ test("мащабиране към цел: преглед, нова чернов�
 test("смяна на изгледа (завъртане) не затваря прозорци и не губи въведеното; грешка при зареждане на храните", async () => {
   const { page, be, context, errors } = await setup({ seed: (be, ids) => addClient(be, ids) }); await login(page);
   await page.getByText("Здравей").waitFor();
+  // табло на 390 px: стойностите в картите не излизат от тях („Нутриционист")
+  await page.setViewportSize({ width: 390, height: 800 });
+  const over = await page.evaluate(() => [...document.querySelectorAll("main div")].filter((d) => d.textContent === "Нутриционист" && d.scrollWidth > d.clientWidth + 1).length);
+  assert.equal(over, 0, "„Нутриционист“ се събира в картата");
+  if (process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/dash-mobile.png" });
+  await page.setViewportSize({ width: 1280, height: 800 });
   await nav(page, "Моите клиенти");
   await page.getByRole("main").getByRole("button", { name: "Мерки", exact: true }).click();
   await page.getByLabel("Тегло (кг)", { exact: true }).fill("71.5");
   for (const width of [375, 900, 1280]) {               // телефон → таблет → десктоп
     await page.setViewportSize({ width, height: 800 });
     assert.equal(await page.getByLabel("Тегло (кг)", { exact: true }).inputValue(), "71.5", `стойността се пази при ${width}px`);
+    // полетата във формата: еднаква височина, датата не застъпва съседното поле
+    const geo = await page.evaluate(() => {
+      const date = document.querySelector('input[type="date"]').getBoundingClientRect();
+      const w = [...document.querySelectorAll("label")].find((l) => l.textContent.startsWith("Тегло (кг)")).querySelector("input").getBoundingClientRect();
+      return { overlap: date.right > w.left + 0.5 && Math.abs(date.top - w.top) < 5, dh: Math.round(date.height), wh: Math.round(w.height), dy: Math.round(date.bottom), wy: Math.round(w.bottom) };
+    });
+    assert.equal(geo.overlap, false, `датата не застъпва теглото при ${width}px`);
+    assert.equal(geo.dh, geo.wh, `еднаква височина при ${width}px`);
+    if (width === 375 && process.env.SHOT_DIR) await page.screenshot({ path: process.env.SHOT_DIR + "/meas-form-375.png" });
   }
   await page.getByRole("button", { name: "Затвори" }).click();
   // търсене на продукт: заявката за храни пропада → видима грешка и „Опитай пак"

@@ -18,7 +18,7 @@ export default function Dashboard({ profile, go }) {
     <div style={{ display: "grid", gap: 16 }}>
       <h2 style={{ margin: 0, color: t.ink }}>Здравей, {profile?.full_name || "колега"} 👋</h2>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(160px,1fr))", gap: 12 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(min(100%, 200px),1fr))", gap: 12 }}>
         <Stat label="Активни клиенти" value={clients ?? "…"} accent={t.coral} />
         <Stat label="Роля" value={profile?.role === "super_admin" ? "Админ" : "Нутриционист"} />
         <Stat label="Статус" value={profile?.status === "active" ? "Активен" : profile?.status} accent={t.good} />

@@ -48,9 +48,9 @@ export function Card({ children, style, ...rest }) {
 
 export function Stat({ label, value, unit, accent }) {
   return (
-    <Card style={{ padding: 16 }}>
+    <Card style={{ padding: 16, minWidth: 0 }}>
       <div style={{ fontSize: 12.5, color: t.muted, fontWeight: 700 }}>{label}</div>
-      <div style={{ fontSize: 26, fontWeight: 800, color: accent || t.tealDark, lineHeight: 1.15 }}>
+      <div style={{ fontSize: 26, fontWeight: 800, color: accent || t.tealDark, lineHeight: 1.15, overflowWrap: "break-word" }}>
         {value}{unit && <span style={{ fontSize: 13, color: t.muted, fontWeight: 600 }}> {unit}</span>}
       </div>
     </Card>
