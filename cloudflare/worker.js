@@ -72,7 +72,7 @@ async function handleInvite(request, env, cors, token) {
   if (!r.ok) {
     const msg = String(out?.msg || out?.message || out?.error_description || out?.error || "");
     if (r.status === 422 || /already/i.test(msg)) return fail("Този имейл вече има акаунт. Използвай „Ръчно (с UID)\".", 409, cors);
-    if (r.status === 429 || /rate limit/i.test(msg)) return fail("Достигнат е лимитът за изпращане на имейли в Supabase. Опитай по-късно или настрой SMTP.", 429, cors);
+    if (r.status === 429 || /rate limit/i.test(msg)) return fail("Достигнат е лимитът за изпращане на имейли. Опитай по-късно.", 429, cors);
     return fail("Поканата не можа да се изпрати: " + (msg || "HTTP " + r.status), 502, cors);
   }
   const id = out?.id || out?.user?.id;

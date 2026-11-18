@@ -1,7 +1,7 @@
 // Превод на най-честите грешки от Supabase Auth на български (иначе се показват на английски).
 const RULES = [
   [/invalid login credentials/i, "Грешен имейл или парола."],
-  [/email rate limit exceeded|over_email_send_rate_limit/i, "Достигнат е лимитът за изпращане на имейли (около 2 на час). Опитай отново след около час."],
+  [/email rate limit exceeded|over_email_send_rate_limit/i, "Достигнат е лимитът за изпращане на имейли. Опитай отново по-късно."],
   [/for security purposes, you can only request this after (\d+) seconds?/i, (m) => `От съображения за сигурност опитай отново след ${m[1]} секунди.`],
   [/rate limit|too many requests/i, "Твърде много опити. Изчакай малко и опитай отново."],
   [/new password should be different from the old password/i, "Новата парола трябва да е различна от старата."],
