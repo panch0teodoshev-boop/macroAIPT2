@@ -11,7 +11,11 @@ export const MAX_HISTORY = 20; // последните N съобщения от
 /** Подрязва историята: последните MAX_HISTORY съобщения, започващи с потребителско. */
 export function trimHistory(messages, max = MAX_HISTORY) {
   // „(празен отговор)“ — запис от стари разговори, преди празните отговори да станат грешка
-  let out = messages.filter((m) => !(m.role === "assistant" && m.content === "(празен отговор)")).slice(-max);
+  let all = messages.filter((m) => !(m.role === "assistant" && m.content === "(празен отговор)"));
+  // Въпрос без отговор (отговорът е бил грешка), последван от нов въпрос → обикновено е същият въпрос,
+  // зададен отново. Пазим само последния, за да не се обърка моделът от повторенията.
+  all = all.filter((m, i) => !(m.role === "user" && all[i + 1]?.role === "user"));
+  let out = all.slice(-max);
   while (out.length && out[0].role !== "user") out = out.slice(1);
   return out.map((m) => ({ role: m.role, content: m.content }));
 }

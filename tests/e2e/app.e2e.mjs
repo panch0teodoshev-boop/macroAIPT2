@@ -511,6 +511,10 @@ test("AI асистент: минимизиран контекст с дневн
   await page.getByRole("button", { name: "Изпрати" }).click();
   await page.getByText("Отговор след повторен опит.").waitFor();
   assert.equal(be.state.aiCalls.length, callsBefore + 1, "първият опит е прекъснат, вторият минава");
+  const sentMsgs = be.state.aiCalls.at(-1).body.messages;
+  assert.equal(sentMsgs.some((m, i) => m.role === "user" && sentMsgs[i + 1]?.role === "user"), false, "без поредни въпроси без отговор");
+  assert.equal(JSON.stringify(sentMsgs).includes("втори въпрос"), false, "неотговореният въпрос не се праща повторно");
+  assert.equal(be.state.aiCalls.at(-1).body.max_tokens, 3500);
   // форматиране: заглавия, удебелен текст, линия, списък и таблица — без сурови „#“ и „**“; HTML остава текст
   be.state.aiStatus = 200;
   be.state.aiReply = "# 6 идеи за закуски\n\nЕто варианти.\n\n---\n\n## 1. Бъркани яйца\n**2 яйца + чушка**\n~300 ккал | ~18г протеин\n\n- първо\n- второ\n\n| Храна | kcal |\n|---|---|\n| Ориз | 130 |\n\n<b>не е удебелено</b>";

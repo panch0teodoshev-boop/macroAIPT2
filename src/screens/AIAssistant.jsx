@@ -133,7 +133,7 @@ export default function AIAssistant() {
     const next = [...base, { role: "user", content }];
     setMessages(next);
     try {
-      const { text, truncated } = await aiRequest({ system: buildSystem(cx), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content, cx) })), maxTokens: 1500 });
+      const { text, truncated } = await aiRequest({ system: buildSystem(cx), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content, cx) })), maxTokens: 3500 }); // рецепти с таблици за няколко ястия са дълги — 1500 ги съкращаваше
       const reply = text + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
       const updated = [...next, { role: "assistant", content: reply }];
       setMessages(updated);
