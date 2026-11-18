@@ -447,6 +447,12 @@ test("AI асистент: минимизиран контекст с дневн
   await page.getByRole("button", { name: "Изпрати" }).click();
   await page.getByText(/⚠️ upstream error/).waitFor();
   assert.equal(be.db.ai_conversations[0].messages.some((m) => /upstream error/.test(m.content)), false);
+  // празен отговор от AI → ясна грешка, не се записва като отговор
+  be.state.aiStatus = 200; be.state.aiReply = "";
+  await page.getByPlaceholder(/Въпрос за режима/).fill("трети въпрос");
+  await page.getByRole("button", { name: "Изпрати" }).click();
+  await page.getByText("⚠️ AI не върна отговор. Опитай отново.").waitFor();
+  assert.equal(be.db.ai_conversations[0].messages.some((m) => m.role === "assistant" && !m.content), false);
   // форматиране: заглавия, удебелен текст, линия, списък и таблица — без сурови „#“ и „**“; HTML остава текст
   be.state.aiStatus = 200;
   be.state.aiReply = "# 6 идеи за закуски\n\nЕто варианти.\n\n---\n\n## 1. Бъркани яйца\n**2 яйца + чушка**\n~300 ккал | ~18г протеин\n\n- първо\n- второ\n\n| Храна | kcal |\n|---|---|\n| Ориз | 130 |\n\n<b>не е удебелено</b>";

@@ -123,7 +123,7 @@ export default function AIAssistant() {
     setMessages(next);
     try {
       const { text, truncated } = await aiRequest({ system: buildSystem(cx), messages: trimHistory(next.filter((m) => !m.error)).map((m) => ({ ...m, content: redactName(m.content, cx) })), maxTokens: 1500 });
-      const reply = (text || "(празен отговор)") + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
+      const reply = text + (truncated ? "\n\n[Отговорът е съкратен поради ограничение на дължината — помоли за продължение.]" : "");
       const updated = [...next, { role: "assistant", content: reply }];
       setMessages(updated);
       // запис на разговора

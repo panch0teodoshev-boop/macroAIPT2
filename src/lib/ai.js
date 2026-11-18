@@ -10,7 +10,8 @@ export const MAX_HISTORY = 20; // последните N съобщения от
 
 /** Подрязва историята: последните MAX_HISTORY съобщения, започващи с потребителско. */
 export function trimHistory(messages, max = MAX_HISTORY) {
-  let out = messages.slice(-max);
+  // „(празен отговор)“ — запис от стари разговори, преди празните отговори да станат грешка
+  let out = messages.filter((m) => !(m.role === "assistant" && m.content === "(празен отговор)")).slice(-max);
   while (out.length && out[0].role !== "user") out = out.slice(1);
   return out.map((m) => ({ role: m.role, content: m.content }));
 }
@@ -40,6 +41,12 @@ export async function aiRequest({ system, messages, maxTokens = 1024, timeoutMs 
     throw new Error(body?.error?.message || `AI услугата върна грешка (HTTP ${res.status}).`);
   }
   const text = (body?.content || []).map((b) => b.text || "").join("").trim();
+  if (!text) {
+    // празен отговор (рядко: отказ на модела или временен проблем) → грешка, а не „отговор“ в разговора
+    throw new Error(body?.stop_reason === "refusal"
+      ? "AI отказа да отговори на този въпрос. Преформулирай го."
+      : "AI не върна отговор. Опитай отново.");
+  }
   return { text, truncated: body?.stop_reason === "max_tokens" };
 }
 
